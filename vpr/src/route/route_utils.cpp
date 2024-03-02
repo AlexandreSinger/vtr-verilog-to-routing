@@ -261,7 +261,7 @@ void print_route_status(int itry, double elapsed_sec, float pres_fac, int num_bb
     VTR_LOG("%4d", itry);
 
     //Elapsed Time
-    VTR_LOG(" %6.1f", elapsed_sec);
+    VTR_LOG(" %6.4f", elapsed_sec);
 
     //pres_fac
     constexpr int PRES_FAC_DIGITS = 7;

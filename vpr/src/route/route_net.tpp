@@ -1,5 +1,7 @@
 #pragma once
 
+#define ALEX_PROFILE
+
 /** @file Header implementations for templated net routing fns. */
 
 #include "route_net.h"
@@ -192,6 +194,12 @@ inline NetResultFlags route_net(ConnectionRouter& router,
 
         profiling::conn_start();
 
+#ifdef ALEX_PROFILE
+    auto pre_heap_pushes = router_stats.heap_pushes;
+    auto pre_heap_pops = router_stats.heap_pops;
+	auto start = std::chrono::steady_clock::now();
+#endif
+
         // build a branch in the route tree to the target
         auto sink_flags = route_sink(router,
                                      net_list,
@@ -208,6 +216,33 @@ inline NetResultFlags route_net(ConnectionRouter& router,
                                      choking_spots,
                                      is_flat,
                                      net_bb);
+
+#ifdef ALEX_PROFILE
+	auto end = std::chrono::steady_clock::now();
+    {
+        bool net_is_global = net_list.net_is_global(net_id);
+        // bool high_fanout = is_high_fanout(net_list.net_sinks(net_id).size(), router_opts.high_fanout_threshold);
+        bool sink_critical = (cost_params.criticality > 0.9);
+        bool net_is_clock = route_ctx.is_clock_net[net_id] != 0;
+        bool high_fanout_routing = high_fanout && !sink_critical && !net_is_global && !net_is_clock && -routing_predictor.get_slope() > router_opts.high_fanout_max_slope;
+        auto post_heap_pushes = router_stats.heap_pushes;
+        auto post_heap_pops = router_stats.heap_pops;
+    std::cout << "Connection info: ";
+    std::cout << itry << ", ";
+    std::cout << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << ", "; 
+    // Getting some extra data that may be interesting.
+    std::cout << static_cast<size_t>(net_id) << ", ";
+    std::cout << net_is_global << ", ";
+    std::cout << high_fanout << ", ";
+    std::cout << sink_critical << ", ";
+    std::cout << net_is_clock << ", ";
+    std::cout << high_fanout_routing << ", ";
+    std::cout << post_heap_pushes - pre_heap_pushes << ", ";
+    std::cout << post_heap_pops - pre_heap_pops << ", ";
+    std::cout << num_sinks;
+    std::cout << "\n";
+    }
+#endif
 
         flags.retry_with_full_bb |= sink_flags.retry_with_full_bb;
 
