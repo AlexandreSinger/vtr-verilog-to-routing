@@ -54,12 +54,27 @@ endif()
 
 #Create the library
 add_library(libvpr STATIC
-             ${LIB_HEADERS}
-             ${LIB_SOURCES}
+    # Note: Need at least one source file here, even though this is not needed.
+    src/main.cpp
 )
 
-
 target_include_directories(libvpr PUBLIC ${LIB_INCLUDE_DIRS})
+
+set_target_properties(libvpr PROPERTIES PREFIX "") #Avoid extra 'lib' prefix
+
+# List of the libraries VPR depends on
+set(VPR_DEPENDENCIES
+    libvtrutil
+    libarchfpga
+    libsdcparse
+    libblifparse
+    libtatum
+    libargparse
+    libpugixml
+    librrgraph
+)
+
+set(VPR_COMPILE_DEFINITIONS "")
 
 #VPR_ANALYTIC_PLACE is initialized in the root CMakeLists
 #Check Eigen dependency
@@ -69,32 +84,18 @@ if(${VPR_ANALYTIC_PLACE})
 	if (TARGET Eigen3::Eigen)
 		message(STATUS "VPR Analytic Placement dependency (Eigen3): Found")
 		message(STATUS "VPR Analytic Placement: Enabled")
-		target_link_libraries (libvpr Eigen3::Eigen)
-		target_compile_definitions(libvpr PUBLIC -DENABLE_ANALYTIC_PLACE)
+        list(APPEND VPR_DEPENDENCIES Eigen3::Eigen)
+        list(APPEND VPR_COMPILE_DEFINITIONS "ENABLE_ANALYTIC_PLACE")
+        # target_compile_definitions(libvpr PUBLIC -DENABLE_ANALYTIC_PLACE)
 	else ()
 		message(STATUS "VPR Analytic Placement dependency (Eigen3): Not Found (Download manually with sudo apt install libeigen3-dev, and rebuild)")
 		message(STATUS "VPR Analytic Placement: Disabled")
 	endif(TARGET Eigen3::Eigen)
 endif()
 
-set_target_properties(libvpr PROPERTIES PREFIX "") #Avoid extra 'lib' prefix
-
-#Specify link-time dependencies
-target_link_libraries(libvpr
-                        libvtrutil
-                        libarchfpga
-                        libsdcparse
-                        libblifparse
-                        libtatum
-                        libargparse
-                        libpugixml
-                        librrgraph
-)
-
 #link graphics library only when graphics set to on
 if (VPR_USE_EZGL STREQUAL "on")
-    target_link_libraries(libvpr
-			     ezgl)
+    list(APPEND VPR_DEPENDENCIES ezgl)
 
     compile_gresources(
       # input: the name of our resources
@@ -124,30 +125,56 @@ if (VPR_USE_EZGL STREQUAL "on")
 
     #Create the executable with resources
     list(APPEND EXEC_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/resources.C)
-
 endif()
 
-target_compile_definitions(libvpr PUBLIC ${GRAPHICS_DEFINES})
-
-if(${VTR_ENABLE_CAPNPROTO})
-    target_link_libraries(libvpr libvtrcapnproto)
-endif()
-
-add_executable(vpr ${EXEC_SOURCES})
-
-target_link_libraries(vpr libvpr)
-
-
-#Supress IPO link warnings if IPO is enabled
-get_target_property(VPR_USES_IPO vpr INTERPROCEDURAL_OPTIMIZATION)
-if (VPR_USES_IPO)
-    set_property(TARGET vpr APPEND PROPERTY LINK_FLAGS ${IPO_LINK_WARN_SUPRESS_FLAGS})
-endif()
-
-
+list(APPEND VPR_COMPILE_DEFINITIONS ${GRAPHICS_DEFINES})
+# target_compile_definitions(libvpr PUBLIC ${GRAPHICS_DEFINES})
 
 #
-# Profile Guilded Optimization Configuration
+# Execution Engine Configuration
+#
+
+#Figure out which engine to use
+if (VPR_EXECUTION_ENGINE STREQUAL "serial")
+    set(VPR_USE_EXECUTION_ENGINE "serial")
+else()
+    find_package(TBB)
+
+    if (VPR_EXECUTION_ENGINE STREQUAL "auto")
+        if (TBB_FOUND)
+            set(VPR_USE_EXECUTION_ENGINE "tbb")
+        else()
+            set(VPR_USE_EXECUTION_ENGINE "serial")
+        endif()
+    elseif(VPR_EXECUTION_ENGINE STREQUAL "tbb")
+        if (TBB_FOUND)
+            set(VPR_USE_EXECUTION_ENGINE "tbb")
+        else()
+            message(FATAL_ERROR "VPR: TBB requested but not found (on debian/ubuntu try 'sudo apt install libtbb-dev'")
+        endif()
+    endif()
+endif()
+
+#Configure the build to use the selected engine
+if (VPR_USE_EXECUTION_ENGINE STREQUAL "tbb")
+    list(APPEND VPR_COMPILE_DEFINITIONS "VPR_USE_TBB")
+    # target_compile_definitions(libvpr PRIVATE VPR_USE_TBB)
+    list(APPEND VPR_DEPENDENCIES tbb)
+    list(APPEND VPR_DEPENDENCIES ${TBB_tbbmalloc_proxy_LIBRARY}) #Use the scalable memory allocator
+    message(STATUS "VPR: will support parallel execution using '${VPR_USE_EXECUTION_ENGINE}'")
+elseif(VPR_USE_EXECUTION_ENGINE STREQUAL "serial")
+    message(STATUS "VPR: will only support serial execution")
+else()
+    message(FATAL_ERROR "VPR: Unrecognized execution engine '${VPR_USE_EXECUTION_ENGINE}'")
+endif()
+
+
+if(${VTR_ENABLE_CAPNPROTO})
+    list(APPEND VPR_DEPENDENCIES libvtrcapnproto)
+endif()
+
+#
+# Profile Guided Optimization Configuration
 #
 set(PROF_GEN_FLAGS_TO_CHECK
     #GCC-like
@@ -161,7 +188,8 @@ set(PROF_USE_FLAGS_TO_CHECK
 
 if (VPR_PGO_CONFIG STREQUAL "prof_gen")
     message(STATUS "VPR: building to generate profiling data for PGO")
-    target_link_libraries(libvpr gcov)
+    list(APPEND VPR_DEPENDENCIES gcov)
+    #target_link_libraries(libvpr gcov)
 
     # This is to provide the -lgcov flag required for -fprofile-use to succeed in CHECK_CXX_COMPILER_FLAG below.
     set(CMAKE_REQUIRED_LIBRARIES gcov)
@@ -209,52 +237,48 @@ if (VTR_ENABLE_STRICT_COMPILE)
 endif()
 
 #
-# Execution Engine Configuration
-#
-
-#Figure out which engine to use
-if (VPR_EXECUTION_ENGINE STREQUAL "serial")
-    set(VPR_USE_EXECUTION_ENGINE "serial")
-else()
-    find_package(TBB)
-
-    if (VPR_EXECUTION_ENGINE STREQUAL "auto")
-        if (TBB_FOUND)
-            set(VPR_USE_EXECUTION_ENGINE "tbb")
-        else()
-            set(VPR_USE_EXECUTION_ENGINE "serial")
-        endif()
-    elseif(VPR_EXECUTION_ENGINE STREQUAL "tbb")
-        if (TBB_FOUND)
-            set(VPR_USE_EXECUTION_ENGINE "tbb")
-        else()
-            message(FATAL_ERROR "VPR: TBB requested but not found (on debian/ubuntu try 'sudo apt install libtbb-dev'")
-        endif()
-    endif()
-endif()
-
-#Configure the build to use the selected engine
-if (VPR_USE_EXECUTION_ENGINE STREQUAL "tbb")
-    target_compile_definitions(libvpr PRIVATE VPR_USE_TBB)
-    target_link_libraries(libvpr tbb)
-    target_link_libraries(libvpr ${TBB_tbbmalloc_proxy_LIBRARY}) #Use the scalable memory allocator
-    message(STATUS "VPR: will support parallel execution using '${VPR_USE_EXECUTION_ENGINE}'")
-elseif(VPR_USE_EXECUTION_ENGINE STREQUAL "serial")
-    message(STATUS "VPR: will only support serial execution")
-else()
-    message(FATAL_ERROR "VPR: Unrecognized execution engine '${VPR_USE_EXECUTION_ENGINE}'")
-endif()
-
-#
 # Signal handler configuration
 #
 if (VPR_USE_SIGNAL_HANDLER)
     #Check whether VPR can use sigaction to handle signals (only supported by POSIX)
     CHECK_CXX_SYMBOL_EXISTS(sigaction csignal HAVE_SIGACTION)
     if(HAVE_SIGACTION)
-        target_compile_definitions(libvpr PRIVATE VPR_USE_SIGACTION)
+        list(APPEND VPR_COMPILE_DEFINITIONS "VPR_USE_SIGACTION")
+        #target_compile_definitions(libvpr PRIVATE VPR_USE_SIGACTION)
     endif()
 endif()
+
+# Create the sub-libraries of VPR
+add_subdirectory(src)
+
+#Specify link-time dependencies
+target_link_libraries(libvpr
+    libvpranalysis
+    libvprbase
+    libvprdraw
+    libvprnoc
+    libvprpack
+    libvprplace
+    libvprpower
+    libvprroute
+    libvprtiming
+    libvprutil
+    ${VPR_DEPENDENCIES}
+)
+
+target_compile_definitions(libvpr PRIVATE ${VPR_COMPILE_DEFINITIONS})
+
+add_executable(vpr ${EXEC_SOURCES})
+
+target_link_libraries(vpr libvpr)
+
+
+#Supress IPO link warnings if IPO is enabled
+get_target_property(VPR_USES_IPO vpr INTERPROCEDURAL_OPTIMIZATION)
+if (VPR_USES_IPO)
+    set_property(TARGET vpr APPEND PROPERTY LINK_FLAGS ${IPO_LINK_WARN_SUPRESS_FLAGS})
+endif()
+
 
 install(TARGETS vpr libvpr DESTINATION bin)
 install(FILES ${LIB_HEADERS} DESTINATION include/libvpr)
