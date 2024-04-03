@@ -15,6 +15,8 @@
 #include "rr_graph_fwd.h"
 #include "vtr_dynamic_bitset.h"
 
+#include <fstream>
+
 /** Attempt to route a single net.
  *
  * @param router The ConnectionRouter instance 
@@ -172,6 +174,8 @@ inline NetResultFlags route_net(ConnectionRouter *router,
         budgeting_inf.set_should_reroute(net_id, false);
     }
 
+    std::ofstream profile_csv_file("connections_profile.csv", std::ios::app);
+
     // explore in order of decreasing criticality (no longer need sink_order array)
     for (unsigned itarget = 0; itarget < remaining_targets.size(); ++itarget) {
         int target_pin = remaining_targets[itarget];
@@ -192,6 +196,10 @@ inline NetResultFlags route_net(ConnectionRouter *router,
 
         profiling::conn_start();
 
+        auto pre_heap_pushes = router_stats.heap_pushes;
+        auto pre_heap_pops = router_stats.heap_pops;
+        auto start = std::chrono::steady_clock::now();
+
         // build a branch in the route tree to the target
         auto sink_flags = route_sink(router,
                                      net_list,
@@ -210,6 +218,18 @@ inline NetResultFlags route_net(ConnectionRouter *router,
                                      net_bb);
 
         flags.retry_with_full_bb |= sink_flags.retry_with_full_bb;
+
+        auto end = std::chrono::steady_clock::now();
+        {
+            auto post_heap_pushes = router_stats.heap_pushes;
+            auto post_heap_pops = router_stats.heap_pops;
+
+            profile_csv_file << itry;
+            profile_csv_file << "," << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+            profile_csv_file << "," << post_heap_pushes - pre_heap_pushes;
+            profile_csv_file << "," << post_heap_pops - pre_heap_pops;
+            profile_csv_file << "\n";
+        }
 
         if (!sink_flags.success) {
             flags.success = false;

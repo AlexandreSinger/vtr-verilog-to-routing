@@ -265,7 +265,7 @@ endif()
 set(PROFILING_FLAGS "")
 if(VTR_ENABLE_PROFILING)
     #Enable gprof
-    set(PROFILING_FLAGS "-g -pg")
+    set(PROFILING_FLAGS "-g")
     message(STATUS "Profiling Flags: ${PROFILING_FLAGS}")
 endif()
 
