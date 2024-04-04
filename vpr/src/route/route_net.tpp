@@ -224,10 +224,20 @@ inline NetResultFlags route_net(ConnectionRouter *router,
             auto post_heap_pushes = router_stats.heap_pushes;
             auto post_heap_pops = router_stats.heap_pops;
 
+            RRNodeId srcNodeId = tree.root().inode;
+            RRNodeId sinkNodeId = sink_rr;
+            auto src_x = rr_graph.node_xlow(srcNodeId);
+            auto src_y = rr_graph.node_ylow(srcNodeId);
+            auto sink_x = rr_graph.node_xlow(sinkNodeId);
+            auto sink_y = rr_graph.node_ylow(sinkNodeId);
+            auto manhattan = std::abs(sink_x - src_x) + std::abs(sink_y - src_y);
+
             profile_csv_file << itry;
             profile_csv_file << "," << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
             profile_csv_file << "," << post_heap_pushes - pre_heap_pushes;
             profile_csv_file << "," << post_heap_pops - pre_heap_pops;
+            profile_csv_file << "," << manhattan;
+            profile_csv_file << "," << router->get_expected_cost(tree.root(), sinkNodeId, cost_params);
             profile_csv_file << "\n";
         }
 

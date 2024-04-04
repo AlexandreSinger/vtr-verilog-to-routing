@@ -111,6 +111,11 @@ class ConnectionRouterInterface {
     //
     // Ensure route budgets have been calculated before enabling this
     virtual void set_rcv_enabled(bool enable) = 0;
+
+    // PROFILING
+    virtual float get_expected_cost(const RouteTreeNode& rt_node,
+                            RRNodeId target_node,
+                            const t_conn_cost_params& cost_params) = 0;
 };
 
 #endif /* _CONNECTION_ROUTER_INTERFACE_H */

@@ -182,6 +182,22 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
     // Ensure route budgets have been calculated before enabling this
     void set_rcv_enabled(bool enable) final;
 
+    // FOR PROFILING
+    inline float get_expected_cost(const RouteTreeNode& rt_node,
+                            RRNodeId target_node,
+                            const t_conn_cost_params& cost_params) {
+        const RRNodeId inode = rt_node.inode;
+        float backward_path_cost = cost_params.criticality * rt_node.Tdel;
+        float R_upstream = rt_node.R_upstream;
+        float tot_cost = backward_path_cost
+                         + cost_params.astar_fac
+                               * router_lookahead_.get_expected_cost(inode,
+                                                                     target_node,
+                                                                     cost_params,
+                                                                     R_upstream);
+        return tot_cost;
+    }
+
   private:
     // Mark that data associated with rr_node "inode" has been modified, and
     // needs to be reset in reset_path_costs.

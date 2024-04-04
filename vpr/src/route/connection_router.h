@@ -127,6 +127,16 @@ class ConnectionRouter : public ConnectionRouterInterface {
     // Ensure route budgets have been calculated before enabling this
     void set_rcv_enabled(bool enable) final;
 
+    // FOR PROFILING
+    inline float get_expected_cost(const RouteTreeNode& rt_node,
+                            RRNodeId target_node,
+                            const t_conn_cost_params& cost_params) {
+        VPR_FATAL_ERROR(VPR_ERROR_ROUTE, "THIS METHOD IS FOR PROFILING THE PARALLEL ROUTER, WHY IS IT BEING USED HERE?");
+        (void)rt_node;
+        (void)target_node;
+        (void)cost_params;
+    }
+
   private:
     // Mark that data associated with rr_node "inode" has been modified, and
     // needs to be reset in reset_path_costs.
