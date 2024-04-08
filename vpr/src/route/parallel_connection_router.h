@@ -73,6 +73,7 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         sub_threads_.resize(mq_num_threads-1);
         for (size_t i = 0 ; i < mq_num_threads - 1; ++i) {
             sub_threads_[i] = std::thread([i, this] {
+                heap_.initTID();
                 while (true) {
                     this->thread_barrier_head_.wait();
                     if (this->is_router_destroying_ == true) {
@@ -87,6 +88,7 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         for (size_t i = 0; i < mq_num_threads - 1; ++i) {
             sub_threads_[i].detach();
         }
+        heap_.initTID();
     }
 
     ~ParallelConnectionRouter() {

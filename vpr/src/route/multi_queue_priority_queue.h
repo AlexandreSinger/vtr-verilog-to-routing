@@ -1,9 +1,10 @@
 #ifndef _MULTI_QUEUE_PRIORITY_QUEUE_H
 #define _MULTI_QUEUE_PRIORITY_QUEUE_H
 
+#include <functional>
 #include "heap_type.h"
 
-#include "MultiQueueIO.h"
+#include "MultiQueue.h"
 
 #include "rr_graph_fwd.h"
 
@@ -38,7 +39,12 @@ class MultiQueuePriorityQueue {
             return std::get<0>(u) > std::get<0>(v);
         }
     };
-    using MQ_IO = MultiQueueIO<pq_compare, float, pq_node_t>;
+    const std::function<void(pq_node_t)> emptyPrefetchLambda = [] (pq_node_t) -> void {};
+    using MQ_IO = MultiQueue<
+        decltype(emptyPrefetchLambda),
+        pq_compare,
+        float, pq_node_t, false
+    >;
 
     MultiQueuePriorityQueue();
     MultiQueuePriorityQueue(size_t num_threads, size_t num_queues);
@@ -54,6 +60,7 @@ class MultiQueuePriorityQueue {
     void build_heap();
     inline uint64_t getNumPushes() const { return pq_->getNumPushes(); }
     inline uint64_t getNumPops() const { return pq_->getNumPops(); }
+    inline void initTID() { pq_->initTID(); }
     inline void reset() { pq_->reset(); }
 
   private:

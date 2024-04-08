@@ -3,11 +3,11 @@
 #include "vpr_error.h"
 
 MultiQueuePriorityQueue::MultiQueuePriorityQueue() {
-    pq_ = new MQ_IO(2, 1, 0); // Serial (#threads=1, #queues=2) by default
+    pq_ = new MQ_IO(emptyPrefetchLambda, 2, 1, 1, 1); // Serial (#threads=1, #queues=2) by default
 }
 
 MultiQueuePriorityQueue::MultiQueuePriorityQueue(size_t num_threads, size_t num_queues) {
-    pq_ = new MQ_IO(num_queues, num_threads, 0 /*Dont care (batch size for only popBatch)*/);
+    pq_ = new MQ_IO(emptyPrefetchLambda, num_queues, num_threads, 1 /*Dont care (batch size for only popBatch)*/, 1);
 }
 
 MultiQueuePriorityQueue::~MultiQueuePriorityQueue() {
@@ -20,7 +20,7 @@ void MultiQueuePriorityQueue::init_heap(const DeviceGrid& grid) {
 }
 
 bool MultiQueuePriorityQueue::try_pop(pq_node_t &pq_top) {
-    auto tmp = pq_->tryPop();
+    auto tmp = pq_->pop();
     if (!tmp) {
         return false;
     } else {
@@ -30,12 +30,12 @@ bool MultiQueuePriorityQueue::try_pop(pq_node_t &pq_top) {
 }
 
 void MultiQueuePriorityQueue::add_to_heap(const pq_node_t& hptr) {
-    pq_->push({hptr.cost, hptr});
+    pq_->push(hptr.cost, hptr);
 }
 
 void MultiQueuePriorityQueue::push_back(const pq_node_t& hptr) {
     // push_batch_buffer_.push_back({hptr.cost, hptr});
-    pq_->push({hptr.cost, hptr});
+    pq_->push(hptr.cost, hptr);
 }
 
 bool MultiQueuePriorityQueue::is_empty_heap() const {
