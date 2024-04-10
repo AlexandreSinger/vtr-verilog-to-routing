@@ -13,6 +13,7 @@
 #include "route_debug.h"
 #include "route_profiling.h"
 #include "rr_graph_fwd.h"
+#include "rr_node_types.h"
 #include "vtr_dynamic_bitset.h"
 
 #include <fstream>
@@ -238,6 +239,97 @@ inline NetResultFlags route_net(ConnectionRouter *router,
             profile_csv_file << "," << post_heap_pops - pre_heap_pops;
             profile_csv_file << "," << manhattan;
             profile_csv_file << "," << router->get_expected_cost(tree.root(), sinkNodeId, cost_params);
+            profile_csv_file << "," << (size_t)net_id;
+            profile_csv_file << "," << (size_t)srcNodeId;
+            profile_csv_file << "," << (size_t)sinkNodeId;
+            profile_csv_file << "," << (size_t)rr_graph.node_type(srcNodeId);
+            profile_csv_file << "," << (size_t)rr_graph.node_type(sinkNodeId);
+            profile_csv_file << "," << cost_params.criticality;
+            profile_csv_file << "," << cost_params.bend_cost;
+            const std::string &block_name = net_list.block_name(net_list.net_pin_block(net_id, target_pin));
+            const AtomBlockId block_id = g_vpr_ctx.atom().nlist.find_block(block_name);
+            // const AtomBlockType block_ty = g_vpr_ctx.atom().nlist.block_type(block_id);
+            const t_model *block_model = g_vpr_ctx.atom().nlist.block_model(block_id);
+            profile_csv_file << "," << block_model->name;
+            profile_csv_file << "," << block_name;
+            // profile_csv_file << "," << cost_params.delay_budget->min_delay;
+            // profile_csv_file << "," << cost_params.delay_budget->short_path_criticality;
+            // profile_csv_file << "," << cost_params.delay_budget->target_delay;
+            auto is_node_on_side = [&](const RRNodeId &node_id, const e_side &side) {
+                // https://github.com/verilog-to-routing/vtr-verilog-to-routing/blob/44e7f028a8659a4963a6a0564228710ec04bff60/vpr/src/draw/draw_rr.cpp#L701
+                if ((rr_graph.node_type(node_id) != e_rr_type::SOURCE) &&
+                    (rr_graph.node_type(node_id) != e_rr_type::SINK))
+                    return false;
+                int i = rr_graph.node_xlow(node_id);
+                int j = rr_graph.node_ylow(node_id);
+                int layer_num = rr_graph.node_layer(node_id);
+                t_physical_tile_type_ptr type = device_ctx.grid.get_physical_type({i, j, layer_num});
+                int width_offset = device_ctx.grid.get_width_offset({i, j, layer_num});
+                int height_offset = device_ctx.grid.get_height_offset({i, j, layer_num});
+                int ipin = rr_graph.node_pin_num(node_id);
+                if (type->pinloc[width_offset][height_offset][size_t(side)][ipin])
+                    return true;
+                return false;
+            };
+            auto is_node_exclusive_on_side = [&](const RRNodeId &node_id, const e_side &side) {
+                if (!is_node_on_side(node_id, side))
+                    return false;
+                for (const e_side &iside : SIDES) {
+                    if (iside == side)
+                        continue;
+                    if (is_node_on_side(node_id, iside))
+                        return false;
+                }
+                return true;
+            };
+            auto get_side_str = [&](const RRNodeId &node_id) {
+                if (is_node_exclusive_on_side(node_id, e_side::RIGHT))
+                    return "R";
+                if (is_node_exclusive_on_side(node_id, e_side::TOP))
+                    return "T";
+                if (is_node_exclusive_on_side(node_id, e_side::LEFT))
+                    return "L";
+                if (is_node_exclusive_on_side(node_id, e_side::BOTTOM))
+                    return "B";
+                return "X";
+            };
+            profile_csv_file << "," << get_side_str(srcNodeId);
+            profile_csv_file << "," << get_side_str(sinkNodeId);
+            // if (rr_graph.node_type(srcNodeId) == e_rr_type::OPIN)
+            //     profile_csv_file << "," << std::string(rr_graph.node_side_string(srcNodeId));
+            // else
+            //     profile_csv_file << "," << "X";
+            // if (rr_graph.node_type(sinkNodeId) == e_rr_type::IPIN)
+            //     profile_csv_file << "," << std::string(rr_graph.node_side_string(sinkNodeId));
+            // else
+            //     profile_csv_file << "," << "X";
+            // profile_csv_file << "," << rr_graph.node_side_string(sinkNodeId);
+            int src_relative_x = 0;
+            if (src_x < sink_x)
+                src_relative_x = -1;
+            if (src_x > sink_x)
+                src_relative_x = 1;
+            int src_relative_y = 0;
+            if (src_y < sink_y)
+                src_relative_y = -1;
+            if (src_y > sink_y)
+                src_relative_y = 1;
+            profile_csv_file << "," << src_relative_x;
+            profile_csv_file << "," << src_relative_y;
+            bool prediction = false;
+            if ((src_x < sink_x) &&
+                is_node_exclusive_on_side(sinkNodeId, e_side::RIGHT))
+                prediction = true;
+            if ((src_x > sink_x) &&
+                is_node_exclusive_on_side(sinkNodeId, e_side::LEFT))
+                prediction = true;
+            if ((src_y < sink_y) &&
+                is_node_exclusive_on_side(sinkNodeId, e_side::TOP))
+                prediction = true;
+            if ((src_y > sink_y) &&
+                is_node_exclusive_on_side(sinkNodeId, e_side::BOTTOM))
+                prediction = true;
+            profile_csv_file << "," << prediction;
             profile_csv_file << "\n";
         }
 
