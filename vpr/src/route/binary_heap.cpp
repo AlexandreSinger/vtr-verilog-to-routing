@@ -1,6 +1,9 @@
 #include "binary_heap.h"
 #include "rr_graph_fwd.h"
 #include "vtr_log.h"
+#include "vtr_assert.h"
+
+#if defined(VPR_ROUTER_USE_CUSTOMIZED_BINARY_HEAP)
 
 static size_t parent(size_t i) { return i >> 1; }
 // child indices of a heap
@@ -12,7 +15,9 @@ BinaryHeap::BinaryHeap()
     , heap_size_(0)
     , heap_tail_(0)
     , max_index_(std::numeric_limits<size_t>::max())
-    , prune_limit_(std::numeric_limits<size_t>::max()) {}
+    , prune_limit_(std::numeric_limits<size_t>::max()) {
+        VTR_LOG("VPR router use customized binary heap\n");
+    }
 
 BinaryHeap::~BinaryHeap() {
     free_all_memory();
@@ -238,3 +243,170 @@ void BinaryHeap::prune_heap() {
         }
     }
 }
+
+#elif defined(VPR_ROUTER_USE_STL_BINARY_HEAP_WITH_PRIORITY_QUEUE_WRAPPER)
+
+BinaryHeap::BinaryHeap() {
+    VTR_LOG("VPR router use STL binary heap with priority queue wrapper\n");
+}
+
+BinaryHeap::~BinaryHeap() {
+    free_all_memory();
+}
+
+t_heap* BinaryHeap::alloc() {
+    return storage_.alloc();
+}
+
+void BinaryHeap::free(t_heap* hptr) {
+    storage_.free(hptr);
+}
+
+void BinaryHeap::init_heap(const DeviceGrid& grid) {
+    heap_.clear();
+    // `heap_` is used as underlying container to build STL priority queue (binary heap)
+    heap_.reserve((grid.width() - 1) * (grid.height() - 1));
+}
+
+void BinaryHeap::add_to_heap(t_heap* hptr) {
+    pq_.push(hptr);
+}
+
+// Add an element to the back of heap and expand if necessary, but do not maintain heap property
+void BinaryHeap::push_back(t_heap* const hptr) {
+    heap_.push_back(hptr);
+}
+
+bool BinaryHeap::is_empty_heap() const {
+    return pq_.empty();
+}
+
+bool BinaryHeap::is_valid() const {
+    return true;
+}
+
+void BinaryHeap::empty_heap() {
+    while (!pq_.empty()) {
+        free(pq_.top());
+        pq_.pop();
+    }
+}
+
+t_heap* BinaryHeap::get_heap_head() {
+    heap_item_t top_item = pq_.top();
+    pq_.pop();
+    return top_item;
+}
+
+void BinaryHeap::build_heap() {
+    pq_ = std::move(std::priority_queue<heap_item_t, std::vector<heap_item_t>, heap_cmp> (
+                    heap_cmp(), std::move(heap_)));
+}
+
+void BinaryHeap::set_prune_limit(size_t max_index, size_t prune_limit) {
+    (void)max_index;
+    (void)prune_limit;
+}
+
+void BinaryHeap::free_all_memory() {
+    storage_.free_all_memory();
+}
+
+
+#else // D-Ary Heaps, STL Binary Heap
+
+#include "d_ary_heap.hpp"
+
+#if defined(VPR_ROUTER_USE_GITHUB_TWO_ARY_HEAP)
+constexpr int D_ARITY = 2;
+#elif defined(VPR_ROUTER_USE_GITHUB_FOUR_ARY_HEAP)
+constexpr int D_ARITY = 4;
+#elif defined(VPR_ROUTER_USE_STL_BINARY_HEAP)
+constexpr int D_ARITY = -1;
+#endif
+
+BinaryHeap::BinaryHeap() {
+    if constexpr (D_ARITY == -1) {
+        VTR_LOG("VPR router use STL binary heap\n");
+    } else {
+        VTR_LOG("VPR router use GitHub %d-ary heap\n", D_ARITY);
+    }
+}
+
+BinaryHeap::~BinaryHeap() {
+    free_all_memory();
+}
+
+t_heap* BinaryHeap::alloc() {
+    return storage_.alloc();
+}
+void BinaryHeap::free(t_heap* hptr) {
+    storage_.free(hptr);
+}
+
+void BinaryHeap::init_heap(const DeviceGrid& grid) {
+    heap_.clear();
+    heap_.reserve((grid.width() - 1) * (grid.height() - 1));
+}
+
+void BinaryHeap::add_to_heap(t_heap* hptr) {
+    heap_.push_back(hptr);
+    if constexpr (D_ARITY == -1) {
+        std::push_heap(heap_.begin(), heap_.end(), heap_cmp());
+    } else {
+        push_dary_heap<D_ARITY>(heap_.begin(), heap_.end(), heap_cmp());
+    }
+}
+
+bool BinaryHeap::is_empty_heap() const {
+    return (bool)(heap_.empty());
+}
+
+t_heap* BinaryHeap::get_heap_head() {
+    t_heap* cheapest = heap_.front();
+    if constexpr (D_ARITY == -1) {
+        std::pop_heap(heap_.begin(), heap_.end(), heap_cmp());
+    } else {
+        pop_dary_heap<D_ARITY>(heap_.begin(), heap_.end(), heap_cmp());
+    }
+    heap_.pop_back();
+    return (cheapest);
+}
+
+void BinaryHeap::empty_heap() {
+    size_t heap_size_ = heap_.size();
+    for (size_t i = 0; i < heap_size_; i++) {
+        free(heap_[i]);
+    }
+    heap_.clear();
+}
+
+void BinaryHeap::build_heap() {
+    if constexpr (D_ARITY == -1) {
+        std::make_heap(heap_.begin(), heap_.end(), heap_cmp());
+    } else {
+        make_dary_heap<D_ARITY>(heap_.begin(), heap_.end(), heap_cmp());
+    }
+}
+
+void BinaryHeap::set_prune_limit(size_t max_index, size_t prune_limit) {
+    (void) max_index;
+    (void) prune_limit;
+}
+
+void BinaryHeap::push_back(t_heap* const hptr) {
+    heap_.push_back(hptr);
+}
+
+bool BinaryHeap::is_valid() const {
+    return true;
+}
+
+void BinaryHeap::free_all_memory() {
+    if (!heap_.empty()) {
+        empty_heap();
+    }
+    storage_.free_all_memory();
+}
+
+#endif

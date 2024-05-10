@@ -47,18 +47,7 @@ class SerialNetlistRouter : public NetlistRouter {
         auto& route_ctx = g_vpr_ctx.mutable_routing();
 
         // Serial Connection Router
-        // return new ConnectionRouter<HeapType>(
-        //     device_ctx.grid,
-        //     *router_lookahead,
-        //     device_ctx.rr_graph.rr_nodes(),
-        //     &device_ctx.rr_graph,
-        //     device_ctx.rr_rc_data,
-        //     device_ctx.rr_graph.rr_switch(),
-        //     route_ctx.rr_node_route_inf,
-        //     is_flat);
-        
-        // Parallel Connection Router
-        return new ParallelConnectionRouter(
+        return new ConnectionRouter<HeapType>(
             device_ctx.grid,
             *router_lookahead,
             device_ctx.rr_graph.rr_nodes(),
@@ -67,6 +56,17 @@ class SerialNetlistRouter : public NetlistRouter {
             device_ctx.rr_graph.rr_switch(),
             route_ctx.rr_node_route_inf,
             is_flat);
+
+        // Parallel Connection Router
+        // return new ParallelConnectionRouter(
+        //     device_ctx.grid,
+        //     *router_lookahead,
+        //     device_ctx.rr_graph.rr_nodes(),
+        //     &device_ctx.rr_graph,
+        //     device_ctx.rr_rc_data,
+        //     device_ctx.rr_graph.rr_switch(),
+        //     route_ctx.rr_node_route_inf,
+        //     is_flat);
     }
     /* Context fields */
     ConnectionRouterInterface *_router;
