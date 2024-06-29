@@ -75,8 +75,8 @@ public:
 // `node_t` is a simplified version of `t_heap`, and is used as a bundle of node
 // information in the functions inside the routing loop.
 struct node_t {
-    float total_cost;
-    float backward_path_cost;
+    double total_cost;
+    double backward_path_cost;
     float R_upstream;
     RREdgeId prev_edge;
 };
@@ -179,8 +179,8 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         auto& route_ctx = g_vpr_ctx.mutable_routing();
         for (const auto& thread_visited_rr_nodes : modified_rr_node_inf_) {
             for (const auto node : thread_visited_rr_nodes) {
-                route_ctx.rr_node_route_inf[node].path_cost = std::numeric_limits<float>::infinity();
-                route_ctx.rr_node_route_inf[node].backward_path_cost = std::numeric_limits<float>::infinity();
+                route_ctx.rr_node_route_inf[node].path_cost = std::numeric_limits<double>::infinity();
+                route_ctx.rr_node_route_inf[node].backward_path_cost = std::numeric_limits<double>::infinity();
                 route_ctx.rr_node_route_inf[node].prev_edge = RREdgeId::INVALID();
             }
         }

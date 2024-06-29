@@ -284,8 +284,8 @@ void reset_path_costs(const std::vector<RRNodeId>& visited_rr_nodes) {
     auto& route_ctx = g_vpr_ctx.mutable_routing();
 
     for (auto node : visited_rr_nodes) {
-        route_ctx.rr_node_route_inf[node].path_cost = std::numeric_limits<float>::infinity();
-        route_ctx.rr_node_route_inf[node].backward_path_cost = std::numeric_limits<float>::infinity();
+        route_ctx.rr_node_route_inf[node].path_cost = std::numeric_limits<double>::infinity();
+        route_ctx.rr_node_route_inf[node].backward_path_cost = std::numeric_limits<double>::infinity();
         route_ctx.rr_node_route_inf[node].prev_edge = RREdgeId::INVALID();
     }
 }
@@ -421,8 +421,8 @@ void reset_rr_node_route_structs() {
 
         node_inf.prev_edge = RREdgeId::INVALID();
         node_inf.acc_cost = 1.0;
-        node_inf.path_cost = std::numeric_limits<float>::infinity();
-        node_inf.backward_path_cost = std::numeric_limits<float>::infinity();
+        node_inf.path_cost = std::numeric_limits<double>::infinity();
+        node_inf.backward_path_cost = std::numeric_limits<double>::infinity();
         node_inf.set_occ(0);
     }
 }

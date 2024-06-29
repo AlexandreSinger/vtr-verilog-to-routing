@@ -195,9 +195,9 @@ std::tuple<bool, bool, t_heap> ParallelConnectionRouter::timing_driven_route_con
     return std::make_tuple(true, retry_with_full_bb, out);
 }
 
-static inline bool post_target_prune_node(float new_total_cost,
-                                          float new_back_cost,
-                                          float best_back_cost_to_target,
+static inline bool post_target_prune_node(double new_total_cost,
+                                          double new_back_cost,
+                                          double best_back_cost_to_target,
                                           const t_conn_cost_params& params) {
     // Divide out the astar_fac, then multiply to get determinism
     // This is a correction factor to the forward cost to make the total
@@ -207,8 +207,8 @@ static inline bool post_target_prune_node(float new_total_cost,
     // NOTE: Found experimentally that using the original heuristic to order
     //       the nodes in the queue and then post-target pruning based on the
     //       under-estimating heuristic has better runtime.
-    float expected_cost = new_total_cost - new_back_cost;
-    float new_expected_cost = expected_cost;
+    double expected_cost = new_total_cost - new_back_cost;
+    double new_expected_cost = expected_cost;
     // h1 = (h - offset) * fac
     // Protection for division by zero
     if (params.astar_fac > 0.001)
@@ -217,7 +217,7 @@ static inline bool post_target_prune_node(float new_total_cost,
         new_expected_cost /= params.astar_fac;
     new_expected_cost = new_expected_cost - params.post_target_prune_offset;
     // Max function to prevent the heuristic from going negative
-    new_expected_cost = std::max(0.f, new_expected_cost);
+    new_expected_cost = std::max(0.0, new_expected_cost);
     new_expected_cost *= params.post_target_prune_fac;
     if ((new_back_cost + new_expected_cost) > best_back_cost_to_target)
         return true;
@@ -228,8 +228,8 @@ static inline bool post_target_prune_node(float new_total_cost,
 
 // TODO: Once we have a heap node struct, clean this up!
 static inline bool prune_node(RRNodeId inode,
-                              float new_total_cost,
-                              float new_back_cost,
+                              double new_total_cost,
+                              double new_back_cost,
                               RREdgeId new_prev_edge,
                               RRNodeId target_node,
                               vtr::vector<RRNodeId, t_rr_node_route_inf>& rr_node_route_inf_,
@@ -238,7 +238,7 @@ static inline bool prune_node(RRNodeId inode,
     // use the heuristic to help drain the queues.
     if (inode != target_node) {
         t_rr_node_route_inf* target_route_inf = &rr_node_route_inf_[target_node];
-        float best_back_cost_to_target = target_route_inf->backward_path_cost;
+        double best_back_cost_to_target = target_route_inf->backward_path_cost;
         if (post_target_prune_node(new_total_cost, new_back_cost, best_back_cost_to_target, params))
             return true;
     }
@@ -247,7 +247,7 @@ static inline bool prune_node(RRNodeId inode,
     // NOTE: When going to the target, we only want to prune on the truth.
     //       The queues handle using the heuristic to explore nodes faster.
     t_rr_node_route_inf* route_inf = &rr_node_route_inf_[inode];
-    float best_back_cost = route_inf->backward_path_cost;
+    double best_back_cost = route_inf->backward_path_cost;
     if (new_back_cost > best_back_cost)
         return true;
     // In the case of a tie, need to be picky about whether to prune or not in
@@ -293,8 +293,8 @@ static inline bool prune_node(RRNodeId inode,
 }
 
 static inline bool should_not_explore_neighbors(RRNodeId inode,
-                                float new_total_cost,
-                                float new_back_cost,
+                                double new_total_cost,
+                                double new_back_cost,
                                 RRNodeId target_node,
                                 vtr::vector<RRNodeId, t_rr_node_route_inf>& rr_node_route_inf_,
                                 const t_conn_cost_params& params) {
@@ -319,7 +319,7 @@ static inline bool should_not_explore_neighbors(RRNodeId inode,
     // neighbors which is not good. This is done before obtaining the lock to
     // prevent lock contention where possible.
     if (inode != target_node) {
-        float best_back_cost_to_target = rr_node_route_inf_[target_node].backward_path_cost;
+        double best_back_cost_to_target = rr_node_route_inf_[target_node].backward_path_cost;
         if (post_target_prune_node(new_total_cost, new_back_cost, best_back_cost_to_target, params))
             return true;
     }
@@ -372,7 +372,7 @@ void ParallelConnectionRouter::timing_driven_route_connection_from_heap_thread_f
                                                                          const t_bb& bounding_box,
                                                                          const size_t thread_idx) {
     // cheapest t_heap in current route tree to be expanded on
-    float new_total_cost;
+    double new_total_cost;
     RRNodeId inode;
     // While the heap is not empty do
     while (heap_.try_pop(new_total_cost, inode)) {
@@ -582,7 +582,7 @@ void ParallelConnectionRouter::timing_driven_add_to_heap(const t_conn_cost_param
     // const auto& device_ctx = g_vpr_ctx.device();
     // Initialized to current
     node_t next;
-    next.total_cost = std::numeric_limits<float>::infinity(); // Not used directly
+    next.total_cost = std::numeric_limits<double>::infinity(); // Not used directly
     next.backward_path_cost = current.backward_path_cost;
     next.R_upstream = current.R_upstream;
     next.prev_edge = from_edge;
@@ -594,8 +594,8 @@ void ParallelConnectionRouter::timing_driven_add_to_heap(const t_conn_cost_param
                                       from_edge,
                                       target_node);
 
-    float new_total_cost = next.total_cost;
-    float new_back_cost = next.backward_path_cost;
+    double new_total_cost = next.total_cost;
+    double new_back_cost = next.backward_path_cost;
 
     if (prune_node(to_node, new_total_cost, new_back_cost, from_edge, target_node, rr_node_route_inf_, cost_params))
         return;
@@ -748,11 +748,11 @@ void ParallelConnectionRouter::evaluate_timing_driven_node_costs(node_t* to,
         }
     }
 
-    float total_cost = 0.;
+    double total_cost = 0.;
 
     // const auto& device_ctx = g_vpr_ctx.device();
     //Update total cost
-    float expected_cost = router_lookahead_.get_expected_cost(to_node,
+    double expected_cost = router_lookahead_.get_expected_cost(to_node,
                                                               target_node,
                                                               cost_params,
                                                               to->R_upstream);
@@ -854,7 +854,7 @@ void ParallelConnectionRouter::add_route_tree_node_to_heap(
     const t_bb& net_bb) {
     const auto& device_ctx = g_vpr_ctx.device();
     const RRNodeId inode = rt_node.inode;
-    float backward_path_cost = cost_params.criticality * rt_node.Tdel;
+    double backward_path_cost = cost_params.criticality * rt_node.Tdel;
     float R_upstream = rt_node.R_upstream;
 
     /* Don't push to heap if not in bounding box: no-op for serial router, important for parallel router */
@@ -869,7 +869,7 @@ void ParallelConnectionRouter::add_route_tree_node_to_heap(
 
     // if (!rcv_path_manager.is_enabled()) {
         // tot_cost = backward_path_cost + cost_params.astar_fac * expected_cost;
-        float tot_cost = backward_path_cost
+        double tot_cost = backward_path_cost
                          + cost_params.astar_fac
                                * router_lookahead_.get_expected_cost(inode,
                                                                      target_node,
@@ -881,8 +881,8 @@ void ParallelConnectionRouter::add_route_tree_node_to_heap(
                        describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, inode, is_flat_).c_str());
 
 
-        if (tot_cost >= rr_node_route_inf_[inode].path_cost)
-            return ;
+        if (prune_node(inode, tot_cost, backward_path_cost, RREdgeId::INVALID(), target_node, rr_node_route_inf_, cost_params))
+            return;
         add_to_mod_list(inode, 0/*main thread*/);
         rr_node_route_inf_[inode].path_cost = tot_cost;
         rr_node_route_inf_[inode].prev_edge = RREdgeId::INVALID();
