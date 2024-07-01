@@ -1744,8 +1744,8 @@ struct t_rr_node_route_inf {
     RREdgeId prev_edge;
 
     float acc_cost;
-    float path_cost;
-    float backward_path_cost;
+    double path_cost;
+    double backward_path_cost;
 
   public: //Accessors
     short occ() const { return occ_; }

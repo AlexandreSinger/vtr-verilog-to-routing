@@ -23,8 +23,8 @@
 struct t_heap_path {
     std::vector<RRNodeId> path_rr;
     std::vector<RREdgeId> edge;
-    float backward_delay = 0.;
-    float backward_cong = 0.;
+    double backward_delay = 0.;
+    double backward_cong = 0.;
 };
 
 // Forward declaration of RoutingContext needed for traceback insertion
@@ -74,7 +74,7 @@ class PathManager {
     void set_enabled(bool enable);
 
     // Insert the partial path data into the main route context traceback
-    void insert_backwards_path_into_traceback(t_heap_path* path_data, float cost, float backward_path_cost, RoutingContext& route_ctx);
+    void insert_backwards_path_into_traceback(t_heap_path* path_data, double cost, double backward_path_cost, RoutingContext& route_ctx);
 
     // Dynamically create a t_heap_path structure to be used in the heap
     // Will return unless RCV is enabled

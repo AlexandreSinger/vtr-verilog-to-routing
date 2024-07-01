@@ -348,11 +348,11 @@ void ConnectionRouter<Heap>::timing_driven_expand_cheapest(t_heap* cheapest,
     RRNodeId inode = cheapest->index;
 
     t_rr_node_route_inf* route_inf = &rr_node_route_inf_[inode];
-    float best_total_cost = route_inf->path_cost;
-    float best_back_cost = route_inf->backward_path_cost;
+    double best_total_cost = route_inf->path_cost;
+    double best_back_cost = route_inf->backward_path_cost;
 
-    float new_total_cost = cheapest->cost;
-    float new_back_cost = cheapest->backward_path_cost;
+    double new_total_cost = cheapest->cost;
+    double new_back_cost = cheapest->backward_path_cost;
 
     /* I only re-expand a node if both the "known" backward cost is lower  *
      * in the new expansion (this is necessary to prevent loops from       *
@@ -548,7 +548,7 @@ void ConnectionRouter<Heap>::timing_driven_add_to_heap(const t_conn_cost_params&
     rcv_path_manager.alloc_path_struct(next.path_data);
 
     // Costs initialized to current
-    next.cost = std::numeric_limits<float>::infinity(); //Not used directly
+    next.cost = std::numeric_limits<double>::infinity(); //Not used directly
     next.backward_path_cost = current->backward_path_cost;
 
     // path_data variables are initialized to current values
@@ -566,11 +566,11 @@ void ConnectionRouter<Heap>::timing_driven_add_to_heap(const t_conn_cost_params&
                                       from_edge,
                                       target_node);
 
-    float best_total_cost = rr_node_route_inf_[to_node].path_cost;
-    float best_back_cost = rr_node_route_inf_[to_node].backward_path_cost;
+    double best_total_cost = rr_node_route_inf_[to_node].path_cost;
+    double best_back_cost = rr_node_route_inf_[to_node].backward_path_cost;
 
-    float new_total_cost = next.cost;
-    float new_back_cost = next.backward_path_cost;
+    double new_total_cost = next.cost;
+    double new_back_cost = next.backward_path_cost;
 
     if (new_total_cost < best_total_cost && ((rcv_path_manager.is_enabled()) || (new_back_cost < best_back_cost))) {
         VTR_LOGV_DEBUG(router_debug_, "      Expanding to node %d (%s)\n", to_node,
@@ -642,11 +642,11 @@ static bool same_non_config_node_set(RRNodeId from_node, RRNodeId to_node) {
 #endif
 
 template<typename Heap>
-float ConnectionRouter<Heap>::compute_node_cost_using_rcv(const t_conn_cost_params cost_params,
+double ConnectionRouter<Heap>::compute_node_cost_using_rcv(const t_conn_cost_params cost_params,
                                                           RRNodeId to_node,
                                                           RRNodeId target_node,
-                                                          float backwards_delay,
-                                                          float backwards_cong,
+                                                          double backwards_delay,
+                                                          double backwards_cong,
                                                           float R_upstream) {
     float expected_delay;
     float expected_cong;
@@ -656,11 +656,11 @@ float ConnectionRouter<Heap>::compute_node_cost_using_rcv(const t_conn_cost_para
     VTR_ASSERT(is_flat_ != true);
     std::tie(expected_delay, expected_cong) = router_lookahead_.get_expected_delay_and_cong(to_node, target_node, cost_params, R_upstream);
 
-    float expected_total_delay_cost;
-    float expected_total_cong_cost;
+    double expected_total_delay_cost;
+    double expected_total_cong_cost;
 
-    float expected_total_cong = cost_params.astar_fac * expected_cong + backwards_cong;
-    float expected_total_delay = cost_params.astar_fac * expected_delay + backwards_delay;
+    double expected_total_cong = cost_params.astar_fac * expected_cong + backwards_cong;
+    double expected_total_delay = cost_params.astar_fac * expected_delay + backwards_delay;
 
     //If budgets specified calculate cost as described by RCV paper:
     //    R. Fung, V. Betz and W. Chow, "Slack Allocation and Routing to Improve FPGA Timing While
@@ -668,15 +668,15 @@ float ConnectionRouter<Heap>::compute_node_cost_using_rcv(const t_conn_cost_para
     //     Integrated Circuits and Systems, vol. 27, no. 4, pp. 686-697, April 2008.
 
     // Normalization constant defined in RCV paper cited above
-    constexpr float NORMALIZATION_CONSTANT = 100e-12;
+    constexpr double NORMALIZATION_CONSTANT = 100e-12;
 
     expected_total_delay_cost = expected_total_delay;
-    expected_total_delay_cost += (delay_budget->short_path_criticality + cost_params.criticality) * std::max(0.f, delay_budget->target_delay - expected_total_delay);
+    expected_total_delay_cost += (delay_budget->short_path_criticality + cost_params.criticality) * std::max(0., delay_budget->target_delay - expected_total_delay);
     // expected_total_delay_cost += std::pow(std::max(0.f, expected_total_delay - delay_budget->max_delay), 2) / NORMALIZATION_CONSTANT;
-    expected_total_delay_cost += std::pow(std::max(0.f, delay_budget->min_delay - expected_total_delay), 2) / NORMALIZATION_CONSTANT;
+    expected_total_delay_cost += std::pow(std::max(0., delay_budget->min_delay - expected_total_delay), 2) / NORMALIZATION_CONSTANT;
     expected_total_cong_cost = expected_total_cong;
 
-    float total_cost = expected_total_delay_cost + expected_total_cong_cost;
+    double total_cost = expected_total_delay_cost + expected_total_cong_cost;
 
     return total_cost;
 }
@@ -791,7 +791,7 @@ void ConnectionRouter<Heap>::evaluate_timing_driven_node_costs(t_heap* to,
         }
     }
 
-    float total_cost = 0.;
+    double total_cost = 0.;
 
     if (rcv_path_manager.is_enabled() && to->path_data != nullptr) {
         to->path_data->backward_delay += cost_params.criticality * Tdel;
@@ -922,7 +922,7 @@ void ConnectionRouter<Heap>::add_route_tree_node_to_heap(
                        inode, tot_cost, RREdgeId::INVALID(),
                        backward_path_cost, R_upstream);
     } else {
-        float expected_total_cost = compute_node_cost_using_rcv(cost_params, inode, target_node, rt_node.Tdel, 0, R_upstream);
+        double expected_total_cost = compute_node_cost_using_rcv(cost_params, inode, target_node, rt_node.Tdel, 0, R_upstream);
 
         push_back_node_with_info(&heap_, inode, expected_total_cost,
                                  backward_path_cost, R_upstream, rt_node.Tdel, &rcv_path_manager);

@@ -14,10 +14,10 @@
  */
 struct t_heap {
     ///@brief The cost used to sort heap. For the timing-driven router this is the backward_path_cost + expected cost to the target.
-    float cost = 0.;
+    double cost = 0.;
     ///@brief The "known" cost of the path up to and including this node. Used only by the timing-driven router. In this case, the
     ///.cost member contains not only the known backward cost but also an expected cost to the target.
-    float backward_path_cost = 0.;
+    double backward_path_cost = 0.;
     ///@brief Used only by the timing-driven router. Stores the upstream resistance to ground from this node, including the resistance
     /// of the node itself (device_ctx.rr_nodes[index].R).
     float R_upstream = 0.;

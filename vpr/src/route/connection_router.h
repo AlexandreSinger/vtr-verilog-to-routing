@@ -242,12 +242,12 @@ class ConnectionRouter : public ConnectionRouterInterface {
                                 const t_bb& net_bb);
 
     // Evaluate node costs using the RCV algorith
-    float compute_node_cost_using_rcv(const t_conn_cost_params cost_params,
-                                      RRNodeId to_node,
-                                      RRNodeId target_node,
-                                      float backwards_delay,
-                                      float backwards_cong,
-                                      float R_upstream);
+    double compute_node_cost_using_rcv(const t_conn_cost_params cost_params,
+                                       RRNodeId to_node,
+                                       RRNodeId target_node,
+                                       double backwards_delay,
+                                       double backwards_cong,
+                                       float R_upstream);
 
     //Unconditionally adds rt_node to the heap
     //

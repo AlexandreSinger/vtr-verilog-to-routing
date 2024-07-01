@@ -51,7 +51,7 @@ class KAryHeap : public HeapInterface {
      */
     struct heap_elem {
         t_heap* elem_ptr;
-        float cost;
+        double cost;
     };
 
     /**

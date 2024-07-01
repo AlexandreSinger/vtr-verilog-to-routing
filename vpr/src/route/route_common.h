@@ -158,9 +158,9 @@ t_heap* prepare_to_add_node_to_heap(
     T* heap,
     const RouteInf& rr_node_route_inf,
     RRNodeId inode,
-    float total_cost,
+    double total_cost,
     RREdgeId prev_edge,
-    float backward_path_cost,
+    double backward_path_cost,
     float R_upstream) {
     if (total_cost >= rr_node_route_inf[inode].path_cost)
         return nullptr;
@@ -181,9 +181,9 @@ void add_node_to_heap(
     T* heap,
     const RouteInf& rr_node_route_inf,
     RRNodeId inode,
-    float total_cost,
+    double total_cost,
     RREdgeId prev_edge,
-    float backward_path_cost,
+    double backward_path_cost,
     float R_upstream) {
     t_heap* hptr = prepare_to_add_node_to_heap(
         heap,
@@ -202,9 +202,9 @@ void push_back_node(
     T* heap,
     const RouteInf& rr_node_route_inf,
     RRNodeId inode,
-    float total_cost,
+    double total_cost,
     RREdgeId prev_edge,
-    float backward_path_cost,
+    double backward_path_cost,
     float R_upstream) {
     t_heap* hptr = prepare_to_add_node_to_heap(
         heap,
@@ -222,10 +222,10 @@ template<typename T>
 void push_back_node_with_info(
     T* heap,
     RRNodeId inode,
-    float total_cost,
-    float backward_path_cost,
+    double total_cost,
+    double backward_path_cost,
     float R_upstream,
-    float backward_path_delay,
+    double backward_path_delay,
     PathManager* rcv_path_manager) {
     t_heap* hptr = heap->alloc();
     rcv_path_manager->alloc_path_struct(hptr->path_data);
