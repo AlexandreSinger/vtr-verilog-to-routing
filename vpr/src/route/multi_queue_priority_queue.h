@@ -7,7 +7,7 @@
 
 #include "rr_graph_fwd.h"
 
-using pq_prio_t = double;
+using pq_prio_t = float;
 using pq_index_t = uint32_t;
 
 class MultiQueuePriorityQueue {

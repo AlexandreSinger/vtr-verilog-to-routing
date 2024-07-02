@@ -147,7 +147,8 @@ class ConnectionRouter : public ConnectionRouterInterface {
 
         route_inf->prev_edge = cheapest->prev_edge();
         route_inf->path_cost = cheapest->cost;
-        route_inf->backward_path_cost = cheapest->backward_path_cost;
+        route_inf->backward_cong_cost = cheapest->backward_cong_cost;
+        route_inf->backward_del_cost = cheapest->backward_del_cost;
     }
 
     /** Common logic from timing_driven_route_connection_from_route_tree and

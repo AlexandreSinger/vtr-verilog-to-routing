@@ -39,7 +39,7 @@ void PathManager::mark_node_visited(RRNodeId node) {
     }
 }
 
-void PathManager::insert_backwards_path_into_traceback(t_heap_path* path_data, float cost, float backward_path_cost, RoutingContext& route_ctx) {
+void PathManager::insert_backwards_path_into_traceback(t_heap_path* path_data, float cost, float backward_cong_cost, float backward_del_cost, RoutingContext& route_ctx) {
     if (!is_enabled_) return;
 
     for (unsigned i = 1; i < path_data->edge.size() - 1; i++) {
@@ -47,7 +47,8 @@ void PathManager::insert_backwards_path_into_traceback(t_heap_path* path_data, f
         RREdgeId edge = path_data->edge[i - 1];
         route_ctx.rr_node_route_inf[node_2].prev_edge = edge;
         route_ctx.rr_node_route_inf[node_2].path_cost = cost;
-        route_ctx.rr_node_route_inf[node_2].backward_path_cost = backward_path_cost;
+        route_ctx.rr_node_route_inf[node_2].backward_cong_cost = backward_cong_cost;
+        route_ctx.rr_node_route_inf[node_2].backward_del_cost = backward_del_cost;
     }
 }
 

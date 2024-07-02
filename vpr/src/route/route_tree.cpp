@@ -545,7 +545,7 @@ RouteTree::add_subtree_from_heap(t_heap* hptr, int target_net_pin_index, bool is
         VTR_ASSERT(new_inode.is_valid() && "Invalid node being added to path!");
         if (seen_nodes.count(new_inode) != 0) {
             for (const RRNodeId &n : new_branch_inodes) {
-                VTR_LOG("%zu (%.20e), ", (size_t)n, route_ctx.rr_node_route_inf[n].backward_path_cost);
+                VTR_LOG("%zu (%.20e, %.20e), ", (size_t)n, route_ctx.rr_node_route_inf[n].backward_cong_cost, route_ctx.rr_node_route_inf[n].backward_del_cost);
             }
             VTR_LOG("\n");
             VTR_LOG("Duplicate node: %zu\n", new_inode);

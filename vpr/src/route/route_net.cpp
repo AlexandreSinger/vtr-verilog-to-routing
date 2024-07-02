@@ -121,7 +121,8 @@ void update_rr_route_inf_from_tree(const RouteTreeNode& rt_node) {
 
         // path cost should be unset
         VTR_ASSERT(std::isinf(route_ctx.rr_node_route_inf[inode].path_cost));
-        VTR_ASSERT(std::isinf(route_ctx.rr_node_route_inf[inode].backward_path_cost));
+        VTR_ASSERT(std::isinf(route_ctx.rr_node_route_inf[inode].backward_cong_cost));
+        VTR_ASSERT(std::isinf(route_ctx.rr_node_route_inf[inode].backward_del_cost));
     }
 }
 

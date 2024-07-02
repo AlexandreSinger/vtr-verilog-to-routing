@@ -160,7 +160,8 @@ t_heap* prepare_to_add_node_to_heap(
     RRNodeId inode,
     float total_cost,
     RREdgeId prev_edge,
-    float backward_path_cost,
+    float backward_cong_cost,
+    float backward_del_cost,
     float R_upstream) {
     if (total_cost >= rr_node_route_inf[inode].path_cost)
         return nullptr;
@@ -170,7 +171,8 @@ t_heap* prepare_to_add_node_to_heap(
     hptr->index = inode;
     hptr->cost = total_cost;
     hptr->set_prev_edge(prev_edge);
-    hptr->backward_path_cost = backward_path_cost;
+    hptr->backward_cong_cost = backward_cong_cost;
+    hptr->backward_del_cost = backward_del_cost;
     hptr->R_upstream = R_upstream;
     return hptr;
 }
@@ -183,12 +185,13 @@ void add_node_to_heap(
     RRNodeId inode,
     float total_cost,
     RREdgeId prev_edge,
-    float backward_path_cost,
+    float backward_cong_cost,
+    float backward_del_cost,
     float R_upstream) {
     t_heap* hptr = prepare_to_add_node_to_heap(
         heap,
         rr_node_route_inf, inode, total_cost,
-        prev_edge, backward_path_cost, R_upstream);
+        prev_edge, backward_cong_cost, backward_del_cost, R_upstream);
     if (hptr) {
         heap->add_to_heap(hptr);
     }
@@ -204,12 +207,13 @@ void push_back_node(
     RRNodeId inode,
     float total_cost,
     RREdgeId prev_edge,
-    float backward_path_cost,
+    float backward_cong_cost,
+    float backward_del_cost,
     float R_upstream) {
     t_heap* hptr = prepare_to_add_node_to_heap(
         heap,
         rr_node_route_inf, inode, total_cost, prev_edge,
-        backward_path_cost, R_upstream);
+        backward_cong_cost, backward_del_cost, R_upstream);
     if (hptr) {
         heap->push_back(hptr);
     }
@@ -223,7 +227,8 @@ void push_back_node_with_info(
     T* heap,
     RRNodeId inode,
     float total_cost,
-    float backward_path_cost,
+    float backward_cong_cost,
+    float backward_del_cost,
     float R_upstream,
     float backward_path_delay,
     PathManager* rcv_path_manager) {
@@ -232,7 +237,8 @@ void push_back_node_with_info(
 
     hptr->index = inode;
     hptr->cost = total_cost;
-    hptr->backward_path_cost = backward_path_cost;
+    hptr->backward_cong_cost = backward_cong_cost;
+    hptr->backward_del_cost = backward_del_cost;
     hptr->R_upstream = R_upstream;
 
     hptr->path_data->backward_delay = backward_path_delay;

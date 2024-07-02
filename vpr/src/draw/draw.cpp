@@ -920,11 +920,11 @@ static float get_router_expansion_cost(const t_rr_node_route_inf node_inf,
     } else if (draw_router_expansion_cost == DRAW_ROUTER_EXPANSION_COST_KNOWN
                || draw_router_expansion_cost
                       == DRAW_ROUTER_EXPANSION_COST_KNOWN_WITH_EDGES) {
-        return node_inf.backward_path_cost;
+        return node_inf.backward_cong_cost + node_inf.backward_del_cost;
     } else if (draw_router_expansion_cost == DRAW_ROUTER_EXPANSION_COST_EXPECTED
                || draw_router_expansion_cost
                       == DRAW_ROUTER_EXPANSION_COST_EXPECTED_WITH_EDGES) {
-        return node_inf.path_cost - node_inf.backward_path_cost;
+        return node_inf.path_cost - (node_inf.backward_cong_cost + node_inf.backward_del_cost);
     }
 
     VPR_THROW(VPR_ERROR_DRAW, "Invalid Router RR cost drawing type");

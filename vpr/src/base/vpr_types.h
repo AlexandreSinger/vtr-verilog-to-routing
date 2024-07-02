@@ -1734,8 +1734,9 @@ struct t_rr_node_route_inf {
     RREdgeId prev_edge;
 
     float acc_cost;
-    double path_cost;
-    double backward_path_cost;
+    float path_cost;
+    float backward_cong_cost;
+    float backward_del_cost;
     float R_upstream; // TODO: Investigate the effect of adding the R_upstream field in
                       //       this struct. It is put in for the fine-grained parallel
                       //       router's benefits. It is increasing the working set, which

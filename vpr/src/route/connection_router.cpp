@@ -231,9 +231,10 @@ t_heap* ConnectionRouter<Heap>::timing_driven_route_connection_from_heap(RRNodeI
 
         t_rr_node_route_inf* route_inf = &rr_node_route_inf_[inode];
         float best_total_cost = route_inf->path_cost;
-        float best_back_cost = route_inf->backward_path_cost;
+        float best_back_cost = route_inf->backward_cong_cost + route_inf->backward_del_cost;
         float new_total_cost = cheapest->cost;
-        float new_back_cost = cheapest->backward_path_cost;
+        float new_back_cost = cheapest->backward_cong_cost + cheapest->backward_del_cost;
+
         // Pruning
         if (prune_node(new_total_cost, new_back_cost, best_total_cost, best_back_cost)) {
             heap_.free(cheapest);
@@ -350,10 +351,10 @@ void ConnectionRouter<Heap>::timing_driven_expand_cheapest(t_heap* cheapest,
 
     t_rr_node_route_inf* route_inf = &rr_node_route_inf_[inode];
     float best_total_cost = route_inf->path_cost;
-    float best_back_cost = route_inf->backward_path_cost;
+    float best_back_cost = route_inf->backward_cong_cost + route_inf->backward_del_cost;
 
     float new_total_cost = cheapest->cost;
-    float new_back_cost = cheapest->backward_path_cost;
+    float new_back_cost = cheapest->backward_cong_cost + cheapest->backward_del_cost;
 
     if (prune_node(new_total_cost, new_back_cost, best_total_cost, best_back_cost))
         return;
@@ -565,7 +566,8 @@ void ConnectionRouter<Heap>::timing_driven_add_to_heap(const t_conn_cost_params&
 
     // Costs initialized to current
     next.cost = std::numeric_limits<float>::infinity(); //Not used directly
-    next.backward_path_cost = current->backward_path_cost;
+    next.backward_cong_cost = current->backward_cong_cost;
+    next.backward_del_cost = current->backward_del_cost;
 
     // path_data variables are initialized to current values
     // if (rcv_path_manager.is_enabled() && current->path_data) {
@@ -583,10 +585,10 @@ void ConnectionRouter<Heap>::timing_driven_add_to_heap(const t_conn_cost_params&
                                       target_node);
 
     float best_total_cost = rr_node_route_inf_[to_node].path_cost;
-    float best_back_cost = rr_node_route_inf_[to_node].backward_path_cost;
+    float best_back_cost = rr_node_route_inf_[to_node].backward_cong_cost + rr_node_route_inf_[to_node].backward_del_cost;
 
     float new_total_cost = next.cost;
-    float new_back_cost = next.backward_path_cost;
+    float new_back_cost = next.backward_cong_cost + next.backward_del_cost;
 
     if (prune_node(new_total_cost, new_back_cost, best_total_cost, best_back_cost))
         return;
@@ -596,7 +598,8 @@ void ConnectionRouter<Heap>::timing_driven_add_to_heap(const t_conn_cost_params&
     //Record how we reached this node
     next_ptr->cost = next.cost;
     next_ptr->R_upstream = next.R_upstream;
-    next_ptr->backward_path_cost = next.backward_path_cost;
+    next_ptr->backward_cong_cost = next.backward_cong_cost;
+    next_ptr->backward_del_cost = next.backward_del_cost;
     next_ptr->index = to_node;
     next_ptr->set_prev_edge(from_edge);
 
@@ -816,16 +819,17 @@ void ConnectionRouter<Heap>::evaluate_timing_driven_node_costs(t_heap* to,
     }
 
     //Update the backward cost (upstream already included)
-    to->backward_path_cost += (1. - cost_params.criticality) * cong_cost; //Congestion cost
-    to->backward_path_cost += cost_params.criticality * Tdel;             //Delay cost
+    to->backward_cong_cost += (1. - cost_params.criticality) * cong_cost; //Congestion cost
+    to->backward_del_cost += cost_params.criticality * Tdel;             //Delay cost
 
-    if (cost_params.bend_cost != 0.) {
-        t_rr_type from_type = rr_graph_->node_type(from_node);
-        t_rr_type to_type = rr_graph_->node_type(to_node);
-        if ((from_type == CHANX && to_type == CHANY) || (from_type == CHANY && to_type == CHANX)) {
-            to->backward_path_cost += cost_params.bend_cost; //Bend cost
-        }
-    }
+    VTR_ASSERT(cost_params.bend_cost == 0. && "TODO: Handle splitting the bend cost!");
+    // if (cost_params.bend_cost != 0.) {
+    //     t_rr_type from_type = rr_graph_->node_type(from_node);
+    //     t_rr_type to_type = rr_graph_->node_type(to_node);
+    //     if ((from_type == CHANX && to_type == CHANY) || (from_type == CHANY && to_type == CHANX)) {
+    //         to->backward_path_cost += cost_params.bend_cost; //Bend cost
+    //     }
+    // }
 
     float total_cost = 0.;
 
@@ -835,7 +839,8 @@ void ConnectionRouter<Heap>::evaluate_timing_driven_node_costs(t_heap* to,
                                                               target_node,
                                                               cost_params,
                                                               to->R_upstream);
-    total_cost += to->backward_path_cost + cost_params.astar_fac * expected_cost;
+    double backward_path_cost = to->backward_cong_cost + to->backward_del_cost;
+    total_cost += backward_path_cost + cost_params.astar_fac * expected_cost;
 
     // if (rcv_path_manager.is_enabled() && to->path_data != nullptr) {
     //     to->path_data->backward_delay += cost_params.criticality * Tdel;
@@ -874,7 +879,8 @@ void ConnectionRouter<Heap>::empty_heap_annotating_node_route_inf() {
         t_heap* tmp = heap_.get_heap_head();
 
         rr_node_route_inf_[tmp->index].path_cost = tmp->cost;
-        rr_node_route_inf_[tmp->index].backward_path_cost = tmp->backward_path_cost;
+        rr_node_route_inf_[tmp->index].backward_cong_cost = tmp->backward_cong_cost;
+        rr_node_route_inf_[tmp->index].backward_del_cost = tmp->backward_del_cost;
         modified_rr_node_inf_.push_back(tmp->index);
 
         rcv_path_manager.free_path_struct(tmp->path_data);
@@ -937,7 +943,7 @@ void ConnectionRouter<Heap>::add_route_tree_node_to_heap(
     const t_bb& net_bb) {
     const auto& device_ctx = g_vpr_ctx.device();
     const RRNodeId inode = rt_node.inode;
-    float backward_path_cost = cost_params.criticality * rt_node.Tdel;
+    float backward_del_cost = cost_params.criticality * rt_node.Tdel;
     float R_upstream = rt_node.R_upstream;
 
     /* Don't push to heap if not in bounding box: no-op for serial router, important for parallel router */
@@ -952,7 +958,7 @@ void ConnectionRouter<Heap>::add_route_tree_node_to_heap(
 
     if (!rcv_path_manager.is_enabled()) {
         // tot_cost = backward_path_cost + cost_params.astar_fac * expected_cost;
-        float tot_cost = backward_path_cost
+        float tot_cost = backward_del_cost
                          + cost_params.astar_fac
                                * router_lookahead_.get_expected_cost(inode,
                                                                      target_node,
@@ -965,12 +971,12 @@ void ConnectionRouter<Heap>::add_route_tree_node_to_heap(
 
         push_back_node(&heap_, rr_node_route_inf_,
                        inode, tot_cost, RREdgeId::INVALID(),
-                       backward_path_cost, R_upstream);
+                       0. /*backward_cong_cost*/, backward_del_cost, R_upstream);
     } else {
         float expected_total_cost = compute_node_cost_using_rcv(cost_params, inode, target_node, rt_node.Tdel, 0, R_upstream);
 
         push_back_node_with_info(&heap_, inode, expected_total_cost,
-                                 backward_path_cost, R_upstream, rt_node.Tdel, &rcv_path_manager);
+                                 0. /*backward_cong_cost*/, backward_del_cost, R_upstream, rt_node.Tdel, &rcv_path_manager);
     }
 
     update_router_stats(router_stats_,

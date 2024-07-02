@@ -10,7 +10,8 @@
 
 struct pq_node_t {
     float cost = 0.;
-    float backward_path_cost = 0.;
+    float backward_cong_cost = 0.;
+    float backward_del_cost = 0.;
     float R_upstream = 0.;
 
     RRNodeId index = RRNodeId::INVALID(); // TODO: to be optimized

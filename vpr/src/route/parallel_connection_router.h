@@ -75,8 +75,9 @@ public:
 // `node_t` is a simplified version of `t_heap`, and is used as a bundle of node
 // information in the functions inside the routing loop.
 struct node_t {
-    double total_cost;
-    double backward_path_cost;
+    float total_cost;
+    float backward_cong_cost;
+    float backward_del_cost;
     float R_upstream;
     RREdgeId prev_edge;
 };
@@ -179,8 +180,9 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         auto& route_ctx = g_vpr_ctx.mutable_routing();
         for (const auto& thread_visited_rr_nodes : modified_rr_node_inf_) {
             for (const auto node : thread_visited_rr_nodes) {
-                route_ctx.rr_node_route_inf[node].path_cost = std::numeric_limits<double>::infinity();
-                route_ctx.rr_node_route_inf[node].backward_path_cost = std::numeric_limits<double>::infinity();
+                route_ctx.rr_node_route_inf[node].path_cost = std::numeric_limits<float>::infinity();
+                route_ctx.rr_node_route_inf[node].backward_cong_cost = std::numeric_limits<float>::infinity();
+                route_ctx.rr_node_route_inf[node].backward_del_cost = std::numeric_limits<float>::infinity();
                 route_ctx.rr_node_route_inf[node].prev_edge = RREdgeId::INVALID();
             }
         }
@@ -272,7 +274,8 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
 
         route_inf->prev_edge = cheapest.prev_edge;
         route_inf->path_cost = cheapest.total_cost;
-        route_inf->backward_path_cost = cheapest.backward_path_cost;
+        route_inf->backward_cong_cost = cheapest.backward_cong_cost;
+        route_inf->backward_del_cost = cheapest.backward_del_cost;
     }
 
     inline void obtainSpinLock(RRNodeId inode) {

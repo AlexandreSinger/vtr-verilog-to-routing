@@ -25,7 +25,8 @@ HeapStorage::alloc() {
     //Reset
     temp_ptr->set_next_heap_item(nullptr);
     temp_ptr->cost = 0.;
-    temp_ptr->backward_path_cost = 0.;
+    temp_ptr->backward_cong_cost = 0.;
+    temp_ptr->backward_del_cost = 0.;
     temp_ptr->R_upstream = 0.;
     temp_ptr->index = RRNodeId::INVALID();
     temp_ptr->path_data = nullptr;
