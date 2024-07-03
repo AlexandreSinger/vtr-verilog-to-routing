@@ -19,7 +19,8 @@ void MultiQueuePriorityQueue::init_heap(const DeviceGrid& grid) {
     // TODO: Reserve storage for MQ_IO
 }
 
-bool MultiQueuePriorityQueue::try_pop(pq_prio_t &prio, RRNodeId &node) {
+// The `task_type` bit is coded in MSB in `inode` (uint32_t)
+bool MultiQueuePriorityQueue::try_pop(pq_prio_t &prio, RRNodeId &node, bool &task_type) {
     auto tmp = pq_->tryPopWithMinPrio();
     if (!tmp) {
         return false;
@@ -27,7 +28,8 @@ bool MultiQueuePriorityQueue::try_pop(pq_prio_t &prio, RRNodeId &node) {
         pq_index_t node_id;
         std::tie(prio, node_id) = tmp.get();
         static_assert(sizeof(RRNodeId) == sizeof(pq_index_t));
-        node = RRNodeId(node_id);
+        node = RRNodeId(node_id & 0x7FFFFFFF);
+        task_type = node_id & 0x80000000;
         return true;
     }
 }
@@ -37,8 +39,13 @@ static inline pq_index_t cast_RRNodeId_to_pq_index_t(RRNodeId node) {
     return static_cast<pq_index_t>(std::size_t(node));
 }
 
-void MultiQueuePriorityQueue::add_to_heap(const pq_prio_t& prio, const RRNodeId& node) {
-    pq_->push({prio, cast_RRNodeId_to_pq_index_t(node)});
+// The `task_type` bit is coded in MSB in `inode` (uint32_t)
+void MultiQueuePriorityQueue::add_to_heap(const pq_prio_t& prio, const RRNodeId& node, const bool task_type) {
+    auto node_id = cast_RRNodeId_to_pq_index_t(node);
+    if (task_type) {
+        node_id |= 0x80000000;
+    }
+    pq_->push({prio, node_id});
 }
 
 void MultiQueuePriorityQueue::push_back(const pq_prio_t& prio, const RRNodeId& node) {

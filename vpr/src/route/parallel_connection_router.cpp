@@ -389,13 +389,17 @@ void ParallelConnectionRouter::timing_driven_route_connection_from_heap_sub_thre
     }
 }
 
+#define TASK_VISIT 0
+#define TASK_CALC 1
+
 void ParallelConnectionRouter::timing_driven_route_connection_from_heap_thread_func(RRNodeId sink_node,
                                                                          const t_conn_cost_params& cost_params,
                                                                          const t_bb& bounding_box,
                                                                          const size_t thread_idx) {
     // cheapest t_heap in current route tree to be expanded on
-    float new_total_cost;
+    float new_cost;
     RRNodeId inode;
+    bool task_type;
 #ifdef PROFILE_HEAP_OCCUPANCY
     unsigned count = 0;
     if (thread_idx == 0) {
@@ -403,7 +407,7 @@ void ParallelConnectionRouter::timing_driven_route_connection_from_heap_thread_f
     }
 #endif
     // While the heap is not empty do
-    while (heap_.try_pop(new_total_cost, inode)) {
+    while (heap_.try_pop(new_cost, inode, task_type)/*The `task_type` bit is coded in MSB in `inode` (uint32_t)*/) {
 #ifdef PROFILE_HEAP_OCCUPANCY
         if (thread_idx == 0) {
             if (count % (1000 / mq_num_threads) == 0) {
@@ -419,39 +423,64 @@ void ParallelConnectionRouter::timing_driven_route_connection_from_heap_thread_f
 
         // Should we explore the neighbors of this node?
 
-        if (inode == sink_node) {
-            heap_.setMinPrio(new_total_cost);
-            continue;
+        if (task_type == TASK_VISIT) {
+
+            if (should_not_explore_neighbors(inode, new_cost, rr_node_route_inf_[inode].backward_path_cost, sink_node, rr_node_route_inf_, cost_params)) {
+                continue;
+            }
+
+            obtainSpinLock(inode);
+
+            node_t cheapest;
+            cheapest.backward_path_cost = rr_node_route_inf_[inode].backward_path_cost;
+            cheapest.R_upstream = rr_node_route_inf_[inode].R_upstream;
+            cheapest.prev_edge = rr_node_route_inf_[inode].prev_edge;
+
+            releaseLock(inode);
+
+            // Double check now just to be sure that we should still explore neighbors
+            // NOTE: A good question is what happened to the uniqueness pruning. The idea
+            //       is that at this point it does not matter. Basically any duplicates
+            //       will act like they were the last one pushed in. This may create some
+            //       duplicates, but it is a simple way of handling this situation.
+            //       It may be worth investigating a better way to do this in the future.
+            // TODO: This is still doing post-target pruning. May want to investigate
+            //       if this is worth doing.
+            // TODO: should try testing without the pruning below and see if anything changes.
+            if (should_not_explore_neighbors(inode, new_cost, cheapest.backward_path_cost, sink_node, rr_node_route_inf_, cost_params)) {
+                continue;
+            }
+
+            // Adding nodes to heap
+            timing_driven_expand_neighbours(cheapest, inode, cost_params, bounding_box, sink_node, thread_idx);
+
+        } else if (task_type == TASK_CALC) {
+            if (new_cost/*back_path_cost*/ > rr_node_route_inf_[inode].backward_path_cost) {
+                continue;
+            }
+
+            float expected_cost = router_lookahead_.get_expected_cost(inode, sink_node, cost_params, 0);
+            float task_calc_total_cost = new_cost/*back_path_cost*/ + cost_params.astar_fac * expected_cost;
+
+            obtainSpinLock(inode);
+
+            if (new_cost > rr_node_route_inf_[inode].backward_path_cost || task_calc_total_cost > rr_node_route_inf_[inode].path_cost) {
+                releaseLock(inode);
+                continue;
+            }
+
+            rr_node_route_inf_[inode].path_cost = task_calc_total_cost; // Update global total cost
+
+            releaseLock(inode);
+
+            if (inode == sink_node) {
+                heap_.setMinPrio(new_cost);
+                continue;
+            }
+
+            heap_.add_to_heap(task_calc_total_cost, inode, TASK_VISIT);
+
         }
-
-        if (should_not_explore_neighbors(inode, new_total_cost, rr_node_route_inf_[inode].backward_path_cost, sink_node, rr_node_route_inf_, cost_params)) {
-            continue;
-        }
-
-        obtainSpinLock(inode);
-
-        node_t cheapest;
-        cheapest.backward_path_cost = rr_node_route_inf_[inode].backward_path_cost;
-        cheapest.R_upstream = rr_node_route_inf_[inode].R_upstream;
-        cheapest.prev_edge = rr_node_route_inf_[inode].prev_edge;
-
-        releaseLock(inode);
-
-        // Double check now just to be sure that we should still explore neighbors
-        // NOTE: A good question is what happened to the uniqueness pruning. The idea
-        //       is that at this point it does not matter. Basically any duplicates
-        //       will act like they were the last one pushed in. This may create some
-        //       duplicates, but it is a simple way of handling this situation.
-        //       It may be worth investigating a better way to do this in the future.
-        // TODO: This is still doing post-target pruning. May want to investigate
-        //       if this is worth doing.
-        // TODO: should try testing without the pruning below and see if anything changes.
-        if (should_not_explore_neighbors(inode, new_total_cost, cheapest.backward_path_cost, sink_node, rr_node_route_inf_, cost_params)) {
-            continue;
-        }
-
-        // Adding nodes to heap
-        timing_driven_expand_neighbours(cheapest, inode, cost_params, bounding_box, sink_node, thread_idx);
 
     }
 }
@@ -619,11 +648,17 @@ void ParallelConnectionRouter::timing_driven_add_to_heap(const t_conn_cost_param
     // const auto& device_ctx = g_vpr_ctx.device();
     // Initialized to current
     node_t next;
-    next.total_cost = std::numeric_limits<float>::infinity(); // Not used directly
     next.backward_path_cost = current.backward_path_cost;
     next.R_upstream = current.R_upstream;
     next.prev_edge = from_edge;
 
+    // In this function, only backward path cost is updated and the heuristics calculation is
+    // moved to CALC task in `timing_driven_route_connection_from_heap_thread_func`.
+    //
+    // Please note that, we don't move the calculation of neighbor's backward path cost from
+    // VISIT task to CALC task, because that neighbor's backward cost calculation depends on
+    // the current inode's `R_upstream`. If we move it to CALC task, we need to store `R_upstream`
+    // in the heap node structure which makes heap node heavier and push/pop more expensive.
     evaluate_timing_driven_node_costs(&next,
                                       cost_params,
                                       from_node,
@@ -631,24 +666,30 @@ void ParallelConnectionRouter::timing_driven_add_to_heap(const t_conn_cost_param
                                       from_edge,
                                       target_node);
 
-    float new_total_cost = next.total_cost;
     float new_back_cost = next.backward_path_cost;
 
-    if (prune_node(to_node, new_total_cost, new_back_cost, from_edge, target_node, rr_node_route_inf_, cost_params))
-        return;
+    // Prune only on backward path cost
+    if ((to_node != target_node && rr_node_route_inf_[target_node].backward_path_cost <= new_back_cost) ||
+        (rr_node_route_inf_[to_node].backward_path_cost <= new_back_cost)) {
+        return ;
+    }
 
     obtainSpinLock(to_node);
 
-    if (prune_node(to_node, new_total_cost, new_back_cost, from_edge, target_node, rr_node_route_inf_, cost_params)) {
+    if ((to_node != target_node && rr_node_route_inf_[target_node].backward_path_cost <= new_back_cost) ||
+        (rr_node_route_inf_[to_node].backward_path_cost <= new_back_cost)) {
         releaseLock(to_node);
         return;
     }
 
+    // We store the `prev_edge` together with the `backward_path_cost` in global `rr_node_route_inf_`.
+    // It may not be a perfect way for implementing the "split task into CALC and VISIT" optimization,
+    // but we did it this way for simplicity from the algorithm's view.
     update_cheapest(next, to_node, thread_idx);
 
     releaseLock(to_node);
 
-    heap_.add_to_heap(next.total_cost, to_node);
+    heap_.add_to_heap(new_back_cost, to_node, TASK_CALC);
 
     // update_router_stats(router_stats_,
     //                     true,
@@ -694,7 +735,7 @@ void ParallelConnectionRouter::evaluate_timing_driven_node_costs(node_t* to,
                                                                RRNodeId from_node,
                                                                RRNodeId to_node,
                                                                RREdgeId from_edge,
-                                                               RRNodeId target_node) {
+                                                               RRNodeId /*target_node*/) {
     /* new_costs.backward_cost: is the "known" part of the cost to this node -- the
      * congestion cost of all the routing resources back to the existing route
      * plus the known delay of the total path back to the source.
@@ -785,39 +826,43 @@ void ParallelConnectionRouter::evaluate_timing_driven_node_costs(node_t* to,
         }
     }
 
-    float total_cost = 0.;
+    // Note:
+    // The calculation for heurisitics is moved to CALC task in the `timing_driven_route_connection_from_heap_thread_func`
+    //
 
-    // const auto& device_ctx = g_vpr_ctx.device();
-    //Update total cost
-    float expected_cost = router_lookahead_.get_expected_cost(to_node,
-                                                              target_node,
-                                                              cost_params,
-                                                              to->R_upstream);
-    total_cost += to->backward_path_cost + cost_params.astar_fac * expected_cost;
+    // float total_cost = 0.;
 
-    // if (rcv_path_manager.is_enabled() && to->path_data != nullptr) {
-    //     to->path_data->backward_delay += cost_params.criticality * Tdel;
-    //     to->path_data->backward_cong += (1. - cost_params.criticality) * get_rr_cong_cost(to_node, cost_params.pres_fac);
+    // // const auto& device_ctx = g_vpr_ctx.device();
+    // //Update total cost
+    // float expected_cost = router_lookahead_.get_expected_cost(to_node,
+    //                                                           target_node,
+    //                                                           cost_params,
+    //                                                           to->R_upstream);
+    // total_cost += to->backward_path_cost + cost_params.astar_fac * expected_cost;
 
-    //     total_cost = compute_node_cost_using_rcv(cost_params, to_node, target_node, to->path_data->backward_delay, to->path_data->backward_cong, to->R_upstream);
-    // } else {
-    //     const auto& device_ctx = g_vpr_ctx.device();
-    //     //Update total cost
-    //     float expected_cost = router_lookahead_.get_expected_cost(to_node,
-    //                                                               target_node,
-    //                                                               cost_params,
-    //                                                               to->R_upstream);
-    //     VTR_LOGV_DEBUG(router_debug_ && !std::isfinite(expected_cost),
-    //                    "        Lookahead from %s (%s) to %s (%s) is non-finite, expected_cost = %f, to->R_upstream = %f\n",
-    //                    rr_node_arch_name(to_node, is_flat_).c_str(),
-    //                    describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, to_node, is_flat_).c_str(),
-    //                    rr_node_arch_name(target_node, is_flat_).c_str(),
-    //                    describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, target_node, is_flat_).c_str(),
-    //                    expected_cost, to->R_upstream);
-    //     total_cost += to->backward_path_cost + cost_params.astar_fac * expected_cost;
-    // }
+    // // if (rcv_path_manager.is_enabled() && to->path_data != nullptr) {
+    // //     to->path_data->backward_delay += cost_params.criticality * Tdel;
+    // //     to->path_data->backward_cong += (1. - cost_params.criticality) * get_rr_cong_cost(to_node, cost_params.pres_fac);
 
-    to->total_cost = total_cost;
+    // //     total_cost = compute_node_cost_using_rcv(cost_params, to_node, target_node, to->path_data->backward_delay, to->path_data->backward_cong, to->R_upstream);
+    // // } else {
+    // //     const auto& device_ctx = g_vpr_ctx.device();
+    // //     //Update total cost
+    // //     float expected_cost = router_lookahead_.get_expected_cost(to_node,
+    // //                                                               target_node,
+    // //                                                               cost_params,
+    // //                                                               to->R_upstream);
+    // //     VTR_LOGV_DEBUG(router_debug_ && !std::isfinite(expected_cost),
+    // //                    "        Lookahead from %s (%s) to %s (%s) is non-finite, expected_cost = %f, to->R_upstream = %f\n",
+    // //                    rr_node_arch_name(to_node, is_flat_).c_str(),
+    // //                    describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, to_node, is_flat_).c_str(),
+    // //                    rr_node_arch_name(target_node, is_flat_).c_str(),
+    // //                    describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, target_node, is_flat_).c_str(),
+    // //                    expected_cost, to->R_upstream);
+    // //     total_cost += to->backward_path_cost + cost_params.astar_fac * expected_cost;
+    // // }
+
+    // to->total_cost = total_cost;
 }
 
 void ParallelConnectionRouter::empty_heap_annotating_node_route_inf() {

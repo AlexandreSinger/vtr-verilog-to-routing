@@ -25,8 +25,8 @@ class MultiQueuePriorityQueue {
     ~MultiQueuePriorityQueue();
 
     void init_heap(const DeviceGrid& grid);
-    bool try_pop(pq_prio_t &prio, RRNodeId &node);
-    void add_to_heap(const pq_prio_t& prio, const RRNodeId& node);
+    bool try_pop(pq_prio_t &prio, RRNodeId &node, bool &task_type);
+    void add_to_heap(const pq_prio_t& prio, const RRNodeId& node, const bool task_type);
     void push_back(const pq_prio_t& prio, const RRNodeId& node);
     bool is_empty_heap() const;
     bool is_valid() const;

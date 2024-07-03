@@ -356,7 +356,7 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         add_to_mod_list(inode, thread_idx);
 
         route_inf->prev_edge = cheapest.prev_edge;
-        route_inf->path_cost = cheapest.total_cost;
+        // route_inf->path_cost = cheapest.total_cost;
         route_inf->backward_path_cost = cheapest.backward_path_cost;
     }
 
