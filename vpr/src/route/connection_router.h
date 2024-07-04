@@ -1,6 +1,7 @@
 #ifndef _CONNECTION_ROUTER_H
 #define _CONNECTION_ROUTER_H
 
+#include <chrono>
 #include "connection_router_interface.h"
 #include "rr_graph_storage.h"
 #include "route_common.h"
@@ -48,6 +49,10 @@ class ConnectionRouter : public ConnectionRouterInterface {
         heap_.init_heap(grid);
         heap_.set_prune_limit(rr_nodes_.size(), kHeapPruneFactor * rr_nodes_.size());
         only_opin_inter_layer = (grid.get_num_layers() > 1) && inter_layer_connections_limited_to_opin(*rr_graph);
+    }
+
+    ~ConnectionRouter() {
+        VTR_LOG("Connection Router is being destroyed. Time spent computing SSSP: %.3f seconds\n.", this->sssp_total_time.count() / 1000000.0);
     }
 
     // Clear's the modified list.  Should be called after reset_path_costs
@@ -286,6 +291,9 @@ class ConnectionRouter : public ConnectionRouterInterface {
 
     // The path manager for RCV, keeps track of the route tree as a set, also manages the allocation of the heap types
     PathManager rcv_path_manager;
+
+    // Timing
+    std::chrono::microseconds sssp_total_time{0};
 };
 
 /** Construct a connection router that uses the specified heap type.

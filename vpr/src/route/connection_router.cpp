@@ -1,6 +1,7 @@
 #include "connection_router.h"
 
 #include <algorithm>
+#include <chrono>
 #include "rr_graph.h"
 #include "binary_heap.h"
 #include "bucket.h"
@@ -208,6 +209,8 @@ template<typename Heap>
 t_heap* ConnectionRouter<Heap>::timing_driven_route_connection_from_heap(RRNodeId sink_node,
                                                                          const t_conn_cost_params& cost_params,
                                                                          const t_bb& bounding_box) {
+    std::chrono::steady_clock::time_point begin_time = std::chrono::steady_clock::now();
+
     VTR_ASSERT_SAFE(heap_.is_valid());
 
     if (heap_.is_empty_heap()) { //No source
@@ -257,6 +260,9 @@ t_heap* ConnectionRouter<Heap>::timing_driven_route_connection_from_heap(RRNodeI
         //Update known path costs for nodes pushed but not popped, useful for debugging
         empty_heap_annotating_node_route_inf();
     }
+
+    std::chrono::steady_clock::time_point end_time = std::chrono::steady_clock::now();
+    this->sssp_total_time += std::chrono::duration_cast<std::chrono::microseconds>(end_time - begin_time);
 
     if (cheapest == nullptr) { /* Impossible routing.  No path for net. */
         VTR_LOGV_DEBUG(router_debug_, "  Empty heap (no path found)\n");
