@@ -45,6 +45,7 @@ struct t_options {
     /* Stage Options */
     argparse::ArgValue<bool> do_packing;
     argparse::ArgValue<bool> do_placement;
+    argparse::ArgValue<bool> do_analytical_placement;
     argparse::ArgValue<bool> do_routing;
     argparse::ArgValue<bool> do_analysis;
     argparse::ArgValue<bool> do_power;
