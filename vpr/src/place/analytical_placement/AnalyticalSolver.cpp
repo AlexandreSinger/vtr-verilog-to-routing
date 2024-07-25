@@ -4,6 +4,7 @@
 #include <Eigen/Sparse>
 #include <Eigen/Eigenvalues>
 #include <Eigen/IterativeLinearSolvers>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <limits>
@@ -17,16 +18,21 @@
 #include "vpr_error.h"
 #include "vtr_assert.h"
 
+void AnalyticalSolver::print_timing() {
+    for (const auto& p : time_counter)
+        VTR_LOG("%s: %f\n", p.first.c_str(), p.second);
+}
+
 std::unique_ptr<AnalyticalSolver> make_analytical_solver(e_analytical_solver solver_type) {
     if (solver_type == e_analytical_solver::QP_HYBRID)
         return std::make_unique<QPHybridSolver>();
-    else if(solver_type == e_analytical_solver::B2B)
+    else if (solver_type == e_analytical_solver::B2B)
         return std::make_unique<B2BSolver>();
     VPR_FATAL_ERROR(VPR_ERROR_PLACE, "Unrecognized analytical solver type");
     return nullptr;
 }
 
-static bool contains_NaN(Eigen::SparseMatrix<double> &mat) {
+static bool contains_NaN(Eigen::SparseMatrix<double>& mat) {
     bool contains_nan = false;
     for (int k = 0; k < mat.outerSize(); ++k) {
         for (Eigen::SparseMatrix<double>::InnerIterator it(mat, k); it; ++it) {
@@ -42,11 +48,11 @@ static bool contains_NaN(Eigen::SparseMatrix<double> &mat) {
     return contains_nan;
 }
 
-static bool isSymmetric(const Eigen::SparseMatrix<double> &A){
+static bool isSymmetric(const Eigen::SparseMatrix<double>& A) {
     return A.isApprox(A.transpose());
 }
 
-static bool isSemiPosDef(const Eigen::SparseMatrix<double> &A){
+static bool isSemiPosDef(const Eigen::SparseMatrix<double>& A) {
     // TODO: This is slow, it could be faster if we use Cholesky decomposition (Eigen::SimplicialLDLT), still O(n^3)
     Eigen::SelfAdjointEigenSolver<Eigen::SparseMatrix<double>> solver;
     solver.compute(A);
@@ -54,45 +60,44 @@ static bool isSemiPosDef(const Eigen::SparseMatrix<double> &A){
     Eigen::VectorXcd eigenvalues = solver.eigenvalues();
     for (int i = 0; i < eigenvalues.size(); ++i) {
         VTR_ASSERT(eigenvalues(i).imag() == 0 && "Eigenvalue not real!");
-        if(eigenvalues(i).real()<=0){
+        if (eigenvalues(i).real() <= 0) {
             return false;
         }
     }
     return true;
 }
 
-static double conditionNumber(const Eigen::SparseMatrix<double> &A) {
-    // Since real and sym, instead of sigmamax/sigmamin, lambdamax^2/lambdamin^2 is also ok, could be faster. 
+static double conditionNumber(const Eigen::SparseMatrix<double>& A) {
+    // Since real and sym, instead of sigmamax/sigmamin, lambdamax^2/lambdamin^2 is also ok, could be faster.
     // Eigen::MatrixXd denseMat = Eigen::MatrixXd(A);
     // Eigen::JacobiSVD<Eigen::MatrixXd> svd(denseMat);
     Eigen::JacobiSVD<Eigen::MatrixXd> svd(A);
     Eigen::VectorXd singularValues = svd.singularValues();
-    return singularValues(0)/singularValues(singularValues.size()-1);
+    return singularValues(0) / singularValues(singularValues.size() - 1);
 }
 
-static inline void populate_update_hybrid_matrix(Eigen::SparseMatrix<double> &A_sparse_diff,
-                                          Eigen::VectorXd &b_x_diff,
-                                          Eigen::VectorXd &b_y_diff,
-                                          PartialPlacement& p_placement,
-                                          unsigned iteration) {
+static inline void populate_update_hybrid_matrix(Eigen::SparseMatrix<double>& A_sparse_diff,
+                                                 Eigen::VectorXd& b_x_diff,
+                                                 Eigen::VectorXd& b_y_diff,
+                                                 PartialPlacement& p_placement,
+                                                 unsigned iteration) {
     // Aii = Aii+w, bi = bi + wi * xi
     // TODO: verify would it be better if the initial weights are not part of the function.
-    double coeff_pseudo_anchor = 0.01 * std::exp((double)iteration/5);
-    for (size_t i = 0; i < p_placement.num_moveable_nodes; i++){
-        double pseudo_w = coeff_pseudo_anchor; 
+    double coeff_pseudo_anchor = 0.01 * std::exp((double)iteration / 5);
+    for (size_t i = 0; i < p_placement.num_moveable_nodes; i++) {
+        double pseudo_w = coeff_pseudo_anchor;
         A_sparse_diff.coeffRef(i, i) += pseudo_w;
         b_x_diff(i) += pseudo_w * p_placement.node_loc_x[i];
         b_y_diff(i) += pseudo_w * p_placement.node_loc_y[i];
     }
 }
 
-
-static inline void populate_hybrid_matrix(Eigen::SparseMatrix<double> &A_sparse,
-                                          Eigen::VectorXd &b_x,
-                                          Eigen::VectorXd &b_y,
+static inline void populate_hybrid_matrix(Eigen::SparseMatrix<double>& A_sparse,
+                                          Eigen::VectorXd& b_x,
+                                          Eigen::VectorXd& b_y,
                                           PartialPlacement& p_placement) {
     size_t num_star_nodes = 0;
-    for (const std::vector<size_t> &net : p_placement.ap_netlist) {
+    for (const std::vector<size_t>& net : p_placement.ap_netlist) {
         size_t num_pins = net.size();
         if (num_pins > 3)
             num_star_nodes++;
@@ -108,7 +113,7 @@ static inline void populate_hybrid_matrix(Eigen::SparseMatrix<double> &A_sparse,
     tripletList.reserve(num_moveable_nodes * num_nets);
 
     size_t star_node_offset = 0;
-    for (const std::vector<size_t> &net : p_placement.ap_netlist) {
+    for (const std::vector<size_t>& net : p_placement.ap_netlist) {
         size_t num_pins = net.size();
         VTR_ASSERT(num_pins > 1);
         if (num_pins > 3) {
@@ -161,20 +166,28 @@ static inline void populate_hybrid_matrix(Eigen::SparseMatrix<double> &A_sparse,
     A_sparse.setFromTriplets(tripletList.begin(), tripletList.end());
 }
 
-void QPHybridSolver::solve(unsigned iteration, PartialPlacement &p_placement) {
-    if(iteration == 0)
-        populate_hybrid_matrix(A_sparse,b_x, b_y, p_placement);
+void QPHybridSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
+    auto timer1 = std::chrono::high_resolution_clock::now();
+    if (iteration == 0) {
+        time_counter["update matrix"] = 0;
+        time_counter["build matrix"] = 0;
+        time_counter["solve matrix"] = 0;
+        time_counter["total solve time"] = 0;
+        populate_hybrid_matrix(A_sparse, b_x, b_y, p_placement);
+    }
+    auto timer2 = std::chrono::high_resolution_clock::now();
     Eigen::SparseMatrix<double> A_sparse_diff = Eigen::SparseMatrix<double>(A_sparse);
     Eigen::VectorXd b_x_diff = Eigen::VectorXd(b_x);
     Eigen::VectorXd b_y_diff = Eigen::VectorXd(b_y);
-    if(iteration != 0)
+    if (iteration != 0)
         populate_update_hybrid_matrix(A_sparse_diff, b_x_diff, b_y_diff, p_placement, iteration);
 
     VTR_LOG("Running Quadratic Solver\n");
-    
+
+    auto timer3 = std::chrono::high_resolution_clock::now();
     // Solve Ax=b and fills placement with x.
     Eigen::VectorXd x, y;
-    Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> cg;
+    Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper> cg;
     // TODO: can change cg.tolerance to increase performance when needed
     VTR_ASSERT_DEBUG(!b_x_diff.hasNaN() && "b_x has NaN!");
     VTR_ASSERT_DEBUG(!b_y_diff.hasNaN() && "b_y has NaN!");
@@ -184,13 +197,19 @@ void QPHybridSolver::solve(unsigned iteration, PartialPlacement &p_placement) {
     VTR_ASSERT(cg.info() == Eigen::Success && "Conjugate Gradient failed at solving b_x!");
     y = cg.solve(b_y_diff);
     VTR_ASSERT(cg.info() == Eigen::Success && "Conjugate Gradient failed at solving b_y!");
+    auto timer4 = std::chrono::high_resolution_clock::now();
     for (size_t node_id = 0; node_id < p_placement.num_moveable_nodes; node_id++) {
         p_placement.node_loc_x[node_id] = x[node_id];
         p_placement.node_loc_y[node_id] = y[node_id];
     }
+    auto timer5 = std::chrono::high_resolution_clock::now();
+    time_counter["build matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer2 - timer1).count();
+    time_counter["update matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer3 - timer2).count();
+    time_counter["solve matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer4 - timer3).count();
+    time_counter["total solve time"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer5 - timer1).count();
 }
 
-void B2BSolver::initialize_placement_random_normal(PartialPlacement &p_placement) {
+void B2BSolver::initialize_placement_random_normal(PartialPlacement& p_placement) {
     size_t grid_width = g_vpr_ctx.device().grid.width();
     size_t grid_height = g_vpr_ctx.device().grid.height();
     // std::random_device rd;
@@ -211,7 +230,7 @@ void B2BSolver::initialize_placement_random_normal(PartialPlacement &p_placement
     }
 }
 
-void B2BSolver::initialize_placement_random_uniform(PartialPlacement &p_placement) {
+void B2BSolver::initialize_placement_random_uniform(PartialPlacement& p_placement) {
     size_t grid_width = g_vpr_ctx.device().grid.width();
     size_t grid_height = g_vpr_ctx.device().grid.height();
     // std::random_device rd;
@@ -225,7 +244,7 @@ void B2BSolver::initialize_placement_random_uniform(PartialPlacement &p_placemen
     }
 }
 
-void B2BSolver::initialize_placement_least_dense(PartialPlacement &p_placement) {
+void B2BSolver::initialize_placement_least_dense(PartialPlacement& p_placement) {
     size_t grid_width = g_vpr_ctx.device().grid.width();
     size_t grid_height = g_vpr_ctx.device().grid.height();
     double gap = std::sqrt(grid_height * grid_width / static_cast<double>(p_placement.num_moveable_nodes));
@@ -243,11 +262,10 @@ void B2BSolver::initialize_placement_least_dense(PartialPlacement &p_placement) 
             p_placement.node_loc_x[i] = r * gap;
         }
     }
-
 }
 
 // This function return the two nodes on the bound of a netlist, (max, min)
-std::pair<size_t, size_t> B2BSolver::boundNode(const std::vector<size_t>& node_ids, const std::vector<double>& node_locs){
+std::pair<size_t, size_t> B2BSolver::boundNode(const std::vector<size_t>& node_ids, const std::vector<double>& node_locs) {
     auto compare = [&node_locs](size_t a, size_t b) {
         return node_locs[a] < node_locs[b];
     };
@@ -257,7 +275,7 @@ std::pair<size_t, size_t> B2BSolver::boundNode(const std::vector<size_t>& node_i
     return std::make_pair(*maxIt, *minIt);
 }
 
-void B2BSolver::populate_matrix(PartialPlacement &p_placement) {
+void B2BSolver::populate_matrix(PartialPlacement& p_placement) {
     // Resetting As bs
     A_sparse_x = Eigen::SparseMatrix<double>(A_sparse_x.rows(), A_sparse_x.cols());
     A_sparse_y = Eigen::SparseMatrix<double>(A_sparse_y.rows(), A_sparse_y.cols());
@@ -271,7 +289,7 @@ void B2BSolver::populate_matrix(PartialPlacement &p_placement) {
     b_x = Eigen::VectorXd::Zero(p_placement.num_moveable_nodes);
     b_y = Eigen::VectorXd::Zero(p_placement.num_moveable_nodes);
 
-    for (const std::vector<size_t> &net : p_placement.ap_netlist) {
+    for (const std::vector<size_t>& net : p_placement.ap_netlist) {
         int num_pins = net.size();
         VTR_ASSERT(num_pins > 1 && "net least has at least 2 pins");
 
@@ -289,7 +307,7 @@ void B2BSolver::populate_matrix(PartialPlacement &p_placement) {
             maxYId = net[0];
             minYId = net[1];
         }
-        auto add_node = [&](size_t first_node_id, size_t second_node_id, unsigned num_nodes, bool is_x){
+        auto add_node = [&](size_t first_node_id, size_t second_node_id, unsigned num_nodes, bool is_x) {
             if (!p_placement.is_moveable_node(first_node_id)) {
                 if (!p_placement.is_moveable_node(second_node_id)) {
                     return;
@@ -299,12 +317,12 @@ void B2BSolver::populate_matrix(PartialPlacement &p_placement) {
             // epsilon is needed to prevent numerical instability. If two nodes are on top of each other.
             // The denominator of weight is zero, which causes infinity term in the matrix. Another way of
             // interpreting epsilon is the minimum distance two nodes are considered to be in placement.
-            double dist = 0; 
-            if(is_x)
-                dist = 1.0/std::max(std::abs(p_placement.node_loc_x[first_node_id] - p_placement.node_loc_x[second_node_id]), epsilon);
+            double dist = 0;
+            if (is_x)
+                dist = 1.0 / std::max(std::abs(p_placement.node_loc_x[first_node_id] - p_placement.node_loc_x[second_node_id]), epsilon);
             else
-                dist = 1.0/std::max(std::abs(p_placement.node_loc_y[first_node_id] - p_placement.node_loc_y[second_node_id]), epsilon);
-            double w = (2.0/static_cast<double>(num_nodes - 1)) * dist;
+                dist = 1.0 / std::max(std::abs(p_placement.node_loc_y[first_node_id] - p_placement.node_loc_y[second_node_id]), epsilon);
+            double w = (2.0 / static_cast<double>(num_nodes - 1)) * dist;
             if (p_placement.is_moveable_node(second_node_id)) {
                 if (is_x) {
                     tripletList_x.emplace_back(first_node_id, first_node_id, w);
@@ -318,7 +336,7 @@ void B2BSolver::populate_matrix(PartialPlacement &p_placement) {
                     tripletList_y.emplace_back(second_node_id, first_node_id, -w);
                 }
             } else {
-                if (is_x){
+                if (is_x) {
                     tripletList_x.emplace_back(first_node_id, first_node_id, w);
                     b_x(first_node_id) += w * p_placement.node_loc_x[second_node_id];
                 } else {
@@ -332,11 +350,11 @@ void B2BSolver::populate_matrix(PartialPlacement &p_placement) {
             if (node_id != maxXId && node_id != minXId) {
                 add_node(node_id, maxXId, num_pins, true);
                 add_node(node_id, minXId, num_pins, true);
-            } 
+            }
             if (node_id != maxYId && node_id != minYId) {
                 add_node(node_id, maxYId, num_pins, false);
                 add_node(node_id, minYId, num_pins, false);
-            } 
+            }
         }
         add_node(maxXId, minXId, num_pins, true);
         add_node(maxYId, minYId, num_pins, false);
@@ -352,12 +370,12 @@ void B2BSolver::populate_matrix_anchor(PartialPlacement& p_placement, unsigned i
     // double coeff_pseudo_anchor = std::exp((double)iteration/1.0);
 
     // Using alpha from the SimPL paper
-    double coeff_pseudo_anchor = 0.01 * std::exp((double)iteration/3.0);
+    double coeff_pseudo_anchor = 0.01 * std::exp((double)iteration / 3.0);
     // double coeff_pseudo_anchor = 0.01 * (1.0 + static_cast<double>(iteration));
-    for (size_t i = 0; i < p_placement.num_moveable_nodes; i++){
+    for (size_t i = 0; i < p_placement.num_moveable_nodes; i++) {
         // Anchor node are always 2 pins.
-        double pseudo_w_x = coeff_pseudo_anchor*2.0/std::max(std::abs(p_placement.node_loc_x[i] - node_loc_x_legalized[i]), epsilon);
-        double pseudo_w_y = coeff_pseudo_anchor*2.0/std::max(std::abs(p_placement.node_loc_y[i] - node_loc_y_legalized[i]), epsilon);
+        double pseudo_w_x = coeff_pseudo_anchor * 2.0 / std::max(std::abs(p_placement.node_loc_x[i] - node_loc_x_legalized[i]), epsilon);
+        double pseudo_w_y = coeff_pseudo_anchor * 2.0 / std::max(std::abs(p_placement.node_loc_y[i] - node_loc_y_legalized[i]), epsilon);
         A_sparse_x.coeffRef(i, i) += pseudo_w_x;
         A_sparse_y.coeffRef(i, i) += pseudo_w_y;
         b_x(i) += pseudo_w_x * node_loc_x_legalized[i];
@@ -366,7 +384,7 @@ void B2BSolver::populate_matrix_anchor(PartialPlacement& p_placement, unsigned i
     // Clique formulation anchor points
     // double coeff_pseudo_anchor = 0.01 * std::exp((double)iteration/5.0);
     // for (size_t i = 0; i < p_placement.num_moveable_nodes; i++){
-    //     double pseudo_w = coeff_pseudo_anchor; 
+    //     double pseudo_w = coeff_pseudo_anchor;
     //     A_sparse_x.coeffRef(i, i) += pseudo_w;
     //     A_sparse_y.coeffRef(i, i) += pseudo_w;
     //     b_x(i) += pseudo_w * node_loc_x_legalized[i];
@@ -375,22 +393,24 @@ void B2BSolver::populate_matrix_anchor(PartialPlacement& p_placement, unsigned i
 }
 
 // This function is the inner loop that alternate between building matrix based on placement, and solving model to get placement.
-void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement &p_placement){
+void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement) {
     double previous_hpwl, current_hpwl = std::numeric_limits<double>::max();
-    for(unsigned counter = 0; counter < inner_iterations; counter++) {
+    for (unsigned counter = 0; counter < inner_iterations; counter++) {
         previous_hpwl = current_hpwl;
         VTR_LOG("placement hpwl in b2b loop: %f\n", p_placement.get_HPWL());
-        VTR_ASSERT(p_placement.is_valid_partial_placement() && "did not produce a valid placement in b2b solve loop");
+        VTR_ASSERT_DEBUG(p_placement.is_valid_partial_placement() && "did not produce a valid placement in b2b solve loop");
+        auto timer1 = std::chrono::high_resolution_clock::now();
         populate_matrix(p_placement);
         if (iteration != 0)
             populate_matrix_anchor(p_placement, iteration);
+        auto timer2 = std::chrono::high_resolution_clock::now();
         Eigen::VectorXd x, y;
-        Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> cg_x;
-        Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> cg_y;
-        VTR_ASSERT(!b_x.hasNaN() && "b_x has NaN!");
-        VTR_ASSERT(!b_y.hasNaN() && "b_y has NaN!");
-        VTR_ASSERT((b_x.array() >= 0).all() && "b_x has NaN!");
-        VTR_ASSERT((b_y.array() >= 0).all() && "b_y has NaN!");
+        Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper> cg_x;
+        Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper> cg_y;
+        VTR_ASSERT_DEBUG(!b_x.hasNaN() && "b_x has NaN!");
+        VTR_ASSERT_DEBUG(!b_y.hasNaN() && "b_y has NaN!");
+        VTR_ASSERT_DEBUG((b_x.array() >= 0).all() && "b_x has NaN!");
+        VTR_ASSERT_DEBUG((b_y.array() >= 0).all() && "b_y has NaN!");
         cg_x.compute(A_sparse_x);
         cg_y.compute(A_sparse_y);
         // Not worth the time
@@ -399,10 +419,11 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement &p_placement
         // cg_x.setTolerance(cg_x.tolerance() * 100);
         cg_y.setMaxIterations(cg_y.maxIterations() * 100);
         // cg_y.setTolerance(cg_y.tolerance() * 100);
-        VTR_ASSERT(cg_x.info() == Eigen::Success && "Conjugate Gradient failed at compute for A_x!");
-        VTR_ASSERT(cg_y.info() == Eigen::Success && "Conjugate Gradient failed at compute for A_y!");
+        VTR_ASSERT_DEBUG(cg_x.info() == Eigen::Success && "Conjugate Gradient failed at compute for A_x!");
+        VTR_ASSERT_DEBUG(cg_y.info() == Eigen::Success && "Conjugate Gradient failed at compute for A_y!");
         x = cg_x.solve(b_x);
         y = cg_y.solve(b_y);
+        auto timer3 = std::chrono::high_resolution_clock::now();
         // These assertion are not valid because we do not need cg to converge. And often they do not converge with in default max iterations.
         // VTR_ASSERT(cg_x.info() == Eigen::Success && "Conjugate Gradient failed at solving b_x!");
         // VTR_ASSERT(cg_y.info() == Eigen::Success && "Conjugate Gradient failed at solving b_y!");
@@ -414,16 +435,23 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement &p_placement
         if (previous_hpwl < current_hpwl) {
             break;
         }
-    // This would not work because sometimes they stay in close proximity before growing or shrinking
-    // }while(std::abs(current_hpwl - previous_hpwl) < 5 && counter < 100);
-    // current_hpwl > previous_hpwl - 10 would not work when this tries to grow and converge to legalized solution
-    // simplest one for now
+        // This would not work because sometimes they stay in close proximity before growing or shrinking
+        // }while(std::abs(current_hpwl - previous_hpwl) < 5 && counter < 100);
+        // current_hpwl > previous_hpwl - 10 would not work when this tries to grow and converge to legalized solution
+        // simplest one for now
+        time_counter["build matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer2 - timer1).count();
+        time_counter["solve matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer3 - timer2).count();
     }
 }
 
-void B2BSolver::solve(unsigned iteration, PartialPlacement &p_placement) {
+void B2BSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
+    auto timer1 = std::chrono::high_resolution_clock::now();
     // Need an initial placement to decide who are the bounding nodes.
-    if (iteration == 0){
+    if (iteration == 0) {
+        time_counter["build matrix"] = 0;
+        time_counter["solve matrix"] = 0;
+        time_counter["total solve time"] = 0;
+
         initialize_placement_least_dense(p_placement);
         size_t ASize = p_placement.num_moveable_nodes;
         A_sparse_x = Eigen::SparseMatrix<double>(ASize, ASize);
@@ -443,6 +471,8 @@ void B2BSolver::solve(unsigned iteration, PartialPlacement &p_placement) {
     p_placement.node_loc_x = node_loc_x_solved;
     p_placement.node_loc_y = node_loc_y_solved;
     b2b_solve_loop(iteration, p_placement);
+    auto timer2 = std::chrono::high_resolution_clock::now();
+    time_counter["total solve time"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer2 - timer1).count();
     // store solved position in data structure of this class
     // node_loc_x_solved = p_placement.node_loc_x;
     // node_loc_y_solved = p_placement.node_loc_y;
