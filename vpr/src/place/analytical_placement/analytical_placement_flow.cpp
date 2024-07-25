@@ -63,8 +63,7 @@ void run_analytical_placement_flow() {
             continue;
         for (AtomPinId pin_id : atom_netlist.net_pins(net_id)) {
             AtomBlockId blk_id = atom_netlist.pin_block(pin_id);
-            if (constraints.get_atom_partition(blk_id) != PartitionId::INVALID() &&
-                fixed_blocks.find(blk_id) == fixed_blocks.end()) {
+            if (constraints.get_atom_partition(blk_id) != PartitionId::INVALID() && fixed_blocks.find(blk_id) == fixed_blocks.end()) {
                 fixed_blocks.insert(blk_id);
                 PartitionId pi = constraints.get_atom_partition(blk_id);
                 PartitionRegion pr = constraints.get_partition_pr(pi);
@@ -107,6 +106,7 @@ void run_analytical_placement_flow() {
         // p_placement.unicode_art();
     }
 
+    solver->print_timing();
     // Export to a flat placement file.
     p_placement.export_to_flat_placement_file("flat_placement_file.txt");
 
