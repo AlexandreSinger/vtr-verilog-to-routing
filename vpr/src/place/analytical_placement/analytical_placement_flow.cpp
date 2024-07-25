@@ -63,7 +63,7 @@ void run_analytical_placement_flow() {
             continue;
         for (AtomPinId pin_id : atom_netlist.net_pins(net_id)) {
             AtomBlockId blk_id = atom_netlist.pin_block(pin_id);
-            if (constraints.get_atom_partition(blk_id) != PartitionId::INVALID() && 
+            if (constraints.get_atom_partition(blk_id) != PartitionId::INVALID() &&
                 fixed_blocks.find(blk_id) == fixed_blocks.end()) {
                 fixed_blocks.insert(blk_id);
                 PartitionId pi = constraints.get_atom_partition(blk_id);
@@ -80,6 +80,11 @@ void run_analytical_placement_flow() {
 
     // Set up the partial placement object
     PartialPlacement p_placement = PartialPlacement(atom_netlist, fixed_blocks, fixed_blocks_x, fixed_blocks_y);
+    // Printing simulated annealing HPWL
+    if (p_placement.num_moveable_nodes == 0) {
+        VTR_LOG("simulated annealing HPWL: %f\n", p_placement.get_HPWL());
+        VTR_ASSERT(0);
+    }
     p_placement.print_stats();
     // Solve the QP problem
     std::unique_ptr<AnalyticalSolver> solver = make_analytical_solver(e_analytical_solver::B2B);
@@ -95,7 +100,7 @@ void run_analytical_placement_flow() {
         VTR_ASSERT(p_placement.is_valid_partial_placement() && "placement not valid after legalize!");
         double post_legalize_hpwl = p_placement.get_HPWL();
         VTR_LOG("Post-Legalized HPWL: %f\n", post_legalize_hpwl);
-        if(std::abs(post_solve_hpwl - post_legalize_hpwl) < 20){
+        if (std::abs(post_solve_hpwl - post_legalize_hpwl) < 20) {
             VTR_LOG("ended because of convergence\n");
             break;
         }
@@ -107,4 +112,3 @@ void run_analytical_placement_flow() {
 
     FullLegalizer().legalize(p_placement);
 }
-

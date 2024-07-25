@@ -352,7 +352,8 @@ void B2BSolver::populate_matrix_anchor(PartialPlacement& p_placement, unsigned i
     // double coeff_pseudo_anchor = std::exp((double)iteration/1.0);
 
     // Using alpha from the SimPL paper
-    double coeff_pseudo_anchor = 0.01 * (1.0 + static_cast<double>(iteration));
+    double coeff_pseudo_anchor = 0.01 * std::exp((double)iteration/3.0);
+    // double coeff_pseudo_anchor = 0.01 * (1.0 + static_cast<double>(iteration));
     for (size_t i = 0; i < p_placement.num_moveable_nodes; i++){
         // Anchor node are always 2 pins.
         double pseudo_w_x = coeff_pseudo_anchor*2.0/std::max(std::abs(p_placement.node_loc_x[i] - node_loc_x_legalized[i]), epsilon);
@@ -394,9 +395,9 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement &p_placement
         cg_y.compute(A_sparse_y);
         // Not worth the time
         // having more cg iteration does not help with over convergence
-        // cg_x.setMaxIterations(cg_x.maxIterations() * 100);
+        cg_x.setMaxIterations(cg_x.maxIterations() * 100);
         // cg_x.setTolerance(cg_x.tolerance() * 100);
-        // cg_y.setMaxIterations(cg_y.maxIterations() * 100);
+        cg_y.setMaxIterations(cg_y.maxIterations() * 100);
         // cg_y.setTolerance(cg_y.tolerance() * 100);
         VTR_ASSERT(cg_x.info() == Eigen::Success && "Conjugate Gradient failed at compute for A_x!");
         VTR_ASSERT(cg_y.info() == Eigen::Success && "Conjugate Gradient failed at compute for A_y!");
@@ -410,6 +411,9 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement &p_placement
             p_placement.node_loc_y[node_id] = y[node_id];
         }
         current_hpwl = p_placement.get_HPWL();
+        if (previous_hpwl < current_hpwl) {
+            break;
+        }
     // This would not work because sometimes they stay in close proximity before growing or shrinking
     // }while(std::abs(current_hpwl - previous_hpwl) < 5 && counter < 100);
     // current_hpwl > previous_hpwl - 10 would not work when this tries to grow and converge to legalized solution
