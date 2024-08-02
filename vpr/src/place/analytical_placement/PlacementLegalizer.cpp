@@ -5,10 +5,11 @@
 #include <limits>
 #include <queue>
 #include <stack>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "PartialPlacement.h"
-#include "atom_netlist_fwd.h"
+#include "atom_netlist.h"
 #include "cluster_util.h"
 #include "clustered_netlist_utils.h"
 #include "device_grid.h"
@@ -19,10 +20,216 @@
 #include "vpr_context.h"
 #include "vpr_types.h"
 #include "vtr_assert.h"
+#include "vtr_list.h"
 #include "vtr_log.h"
-#include "vtr_vector.h"
 
 namespace {
+
+// A volume of primitives. A P-dimensional quantity (where P is the total
+// number of unieque primitives) which is used to specify the capacity of a
+// tile and the "size" of a molecule in primitives.
+struct PrimitiveVolume {
+    // Internally the primitive volume is a vector.
+    // FIXME: This vector is likely very sparse; may be more efficient to
+    //        store as a list.
+    std::vector<float> primitive_lengths;
+    PrimitiveVolume(size_t num_unique_primitives) : primitive_lengths(num_unique_primitives, 0.f) {}
+
+    void add_length(size_t primitive_id, float amount) {
+        primitive_lengths[primitive_id] += amount;
+    }
+
+    float get_length(size_t primitive_id) const {
+        return primitive_lengths[primitive_id];
+    }
+
+    PrimitiveVolume& operator+=(const PrimitiveVolume& other) {
+        size_t num_primitives = primitive_lengths.size();
+        for (size_t i = 0; i < num_primitives; i++) {
+            primitive_lengths[i] += other.get_length(i);
+        }
+        return *this;
+    }
+
+    void print() {
+        for (float length : primitive_lengths) {
+            VTR_LOG("%.1f\t", length);
+        }
+        VTR_LOG("\n");
+    }
+};
+
+class ArchModel {
+public:
+
+
+    ArchModel(const AtomNetlist &netlist) : atom_netlist(netlist) {
+        // FIXME: The models are not sufficient. We need to distinguish 6-LUT from 5-LUT!
+        //          - Same problem for RAMs and DSPs.
+        // FIXME: LUTs have an implicit mode called "wire". What do we do in that case?
+        t_model* lib_models = g_vpr_ctx.device().arch->model_library;
+        t_model* curr_model = lib_models;
+        while (curr_model != nullptr) {
+            vtr::t_linked_vptr* pb_types = curr_model->pb_types;
+            vtr::t_linked_vptr* curr_pb_type = pb_types;
+            while (curr_pb_type != nullptr) {
+                t_pb_type* pb_type = (t_pb_type *)curr_pb_type->data_vptr;
+                VTR_LOG("%s\n", pb_type->name);
+                curr_pb_type = curr_pb_type->next;
+            }
+            blk_model_to_id[curr_model] = id_to_blk_model.size();
+            id_to_blk_model.push_back(curr_model);
+            curr_model = curr_model->next;
+        }
+        // Add the models defined in the arch file
+        t_model* models = g_vpr_ctx.device().arch->models;
+        curr_model = models;
+        while (curr_model != nullptr) {
+            blk_model_to_id[curr_model] = id_to_blk_model.size();
+            id_to_blk_model.push_back(curr_model);
+            curr_model = curr_model->next;
+        }
+        num_unique_atoms = id_to_blk_model.size();
+    }
+
+    // FIXME: Need a struct to hold the capacity / size information in a clean way such that we can perform math operations on them.
+
+    void get_mode_permutations_recurse(std::vector<float> permutation, std::vector<std::vector<float>> &permutations, const t_mode &mode, int pb_child_idx, int cummulative_num_pb,
+                                std::vector<std::vector<std::vector<float>>> &child_pb_permutations_memoization) {
+        VTR_LOG("\t\tRecurse id: %d\n", pb_child_idx);
+        // If this is the last child pb, this is a full permutation. Add it.
+        if (pb_child_idx == mode.num_pb_type_children) {
+            VTR_LOG("\t\tAdding permutation!\n");
+            permutations.push_back(std::move(permutation));
+            return;
+        }
+        // Get the permutations for the child_pb of the mode.
+        // Note: We have to memoize here since there will be so many permutations,
+        //       a recomputing the model permutations will get expensive fast.
+        if (child_pb_permutations_memoization.size() <= (size_t)pb_child_idx) {
+            child_pb_permutations_memoization.resize(pb_child_idx + 1);
+            get_model_permutations(&mode.pb_type_children[pb_child_idx], child_pb_permutations_memoization[pb_child_idx], cummulative_num_pb);
+        }
+        // For each of the child_pb permutations, accumulate into the partial permutation for this mode.
+        for (const auto &child_pb_permutation : child_pb_permutations_memoization[pb_child_idx]) {
+            std::vector<float> new_permutation = permutation;
+            for (size_t i = 0; i < num_unique_atoms; i++) {
+                new_permutation[i] += child_pb_permutation[i];
+            }
+            // Recurse to construct full permutation from partial.
+            get_mode_permutations_recurse(std::move(new_permutation), permutations, mode, pb_child_idx + 1, cummulative_num_pb, child_pb_permutations_memoization);
+        }
+    }
+
+    // Entry point for getting the mode permutations.
+    void get_mode_permutations(const t_mode &mode, std::vector<std::vector<float>> &permutations, int cummulative_num_pb) {
+        VTR_LOG("Getting permutations of mode: %s\n", mode.name);
+        if (mode.num_pb_type_children == 0) {
+            VTR_LOG("\tMode has no children. No permutations for this mode.\n");
+            return;
+        }
+        std::vector<float> mode_permutation_seed(num_unique_atoms, 0.f);
+        std::vector<std::vector<std::vector<float>>> child_pb_permutations_memoization;
+        get_mode_permutations_recurse(mode_permutation_seed, permutations, mode, 0, cummulative_num_pb, child_pb_permutations_memoization);
+    }
+
+    // NOTE: This is very expensive to calculate. Should minimize how often it
+    //       is called. Also the returned vector will be very large. Should limit
+    //       how much it is stored.
+    void get_model_permutations(t_pb_type *pb_type_ptr, std::vector<std::vector<float>> &permutations, int cummulative_num_pb) {
+        VTR_LOG("Getting Model Permutations of %s\n", pb_type_ptr->name);
+        int num_modes = pb_type_ptr->num_modes;
+        int num_instances = cummulative_num_pb * pb_type_ptr->num_pb;
+        // If this is a leaf/primitive, only one permutation is possible.
+        if (num_modes == 0 && pb_type_ptr->model != nullptr) {
+            VTR_LOG("\tModel is a leaf.\n");
+            std::vector<float> leaf_capacity(num_unique_atoms, 0.f);
+            leaf_capacity[blk_model_to_id[pb_type_ptr->model]] += num_instances;
+            permutations.push_back(std::move(leaf_capacity));
+            return;
+        }
+        // If this is not a leaf/primitive, need to explore its modes and get their permutations.
+        // Since a pb_type cannot be multiple modes at once, we take the union
+        // of their permutations.
+        VTR_LOG("\tModel is not a leaf.\n");
+        for (int mode_idx = 0; mode_idx < num_modes; mode_idx++) {
+            const t_mode& mode = pb_type_ptr->modes[mode_idx];
+            get_mode_permutations(mode, permutations, num_instances);
+        }
+    }
+
+    // Note: There is an implicit simplification here regarding sub-tiles.
+    //       A tile may have multiple sub-tiles in the same location, each has their 
+    //       own sub-tile index. Here, we are using sub-tile ID, where each id is unique.
+    std::vector<std::vector<float>> get_capacity(int tile_x, int tile_y, int tile_layer, int sub_tile_id) {
+        // FIXME: How do we take into account the height/width of a tile?
+        const auto &device_ctx = g_vpr_ctx.device();
+        t_physical_tile_type_ptr tile_type_ptr = device_ctx.grid.get_physical_type({tile_x, tile_y, tile_layer});
+        if (tile_type_ptr->is_empty()) {
+            std::vector<float> empty_capacity(num_unique_atoms, 0.f);
+            return {std::move(empty_capacity)};
+        }
+        const std::vector<t_sub_tile>& sub_tiles = tile_type_ptr->sub_tiles;
+        const t_sub_tile& sub_tile = sub_tiles[sub_tile_id];
+        // FIXME: Need to handle sub-tile capacity. The capacity means we can have
+        //        N copies of whatever combination of permutations we want.
+        // int sub_tile_cap = sub_tile.capacity.total();
+        std::vector<std::vector<float>> model_permutations;
+        for (t_logical_block_type_ptr log_blk_ty_ptr : sub_tile.equivalent_sites) {
+            t_pb_type* pb_type = log_blk_ty_ptr->pb_type;
+            get_model_permutations(pb_type, model_permutations, 1);
+        }
+        
+        // Essentially, given an atom block model, how many models can fit in this tile location?
+        //
+        // device_ctx.grid.get_physical_type
+        //
+        // t_physical_tile_type: libs/libarchfpga/src/physical_types.h
+        //      -> sub_tiles
+        // t_sub_tile: libs/libarchfpga/src/physical_types.h
+        //      -> equivalent sites
+        //      -> capacity?
+        // t_logical_block_type: libs/libarchfpga/src/physical_types.h
+        //      -> pb_type
+        // t_pb_type: libs/libarchfpga/src/physical_types.h
+        //      -> MODEL!!!!! (but this may not be the actual model we want...
+        //      -> This is where the mode is found.
+        
+        // Something interesting is how to handle sub_tiles and equivalent sites.
+        // It sounds like sub_tiles are just different blocks on a single tile.
+        // It sounds like "equivalent sites" are the mode. (to confirm with VB)
+        // Not sure how to hanlde the equivalent sites. It could make this very complicated.
+        // For now the architecture we are using to test does not have equivalent sites.
+        
+        // Something to confirm: For the atom netlist, what models can be found?
+        //  - Do they already have a mode?
+        //  - Are they guarenteed to be at the base of the heirarchy?
+        //  - How do equivalent sites fit into this?
+
+        // Do need to handle modes somehow... Maybe leave this up to the legalizer?
+        // - we could pass back a vector of possible vectors
+        // - We could just take the max and call it a day, no need to be that accurate for a partial legalizer!
+
+        // TODO: I wonder if equivalent sites can be baked into the abstraction somehow.
+        return model_permutations;
+    }
+
+    std::vector<float> get_size(t_pack_molecule* mol) {
+        std::vector<float> size(num_unique_atoms, 0.f);
+        for (const AtomBlockId &blk_id : mol->atom_block_ids) {
+            const t_model* blk_model = atom_netlist.block_model(blk_id);
+            size_t id = blk_model_to_id[blk_model];
+            size[id] += 1;
+        }
+        return size;
+    }
+
+    std::vector<const t_model*> id_to_blk_model;
+private:
+    const AtomNetlist& atom_netlist;
+    size_t num_unique_atoms;
+    std::unordered_map<const t_model*, size_t> blk_model_to_id;
+};
 
 // TODO: This should probably be moved into its own class for ArchModel.
 struct Bin {
@@ -253,6 +460,22 @@ static inline void moveCells(const PartialPlacement& p_placement,
 void FlowBasedLegalizer::legalize(PartialPlacement &p_placement) {
     VTR_LOG("Running Flow-Based Legalizer\n");
 
+    ArchModel arch_model(p_placement.atom_netlist);
+
+    const std::vector<std::vector<float>> sub_tile_capacity = arch_model.get_capacity(2,1,0,0);
+    for (const t_model* model : arch_model.id_to_blk_model) {
+        VTR_LOG("%s\t", model->name);
+    }
+    VTR_LOG("\n");
+    for (const auto &capacity : sub_tile_capacity) {
+        for (float cap : capacity) {
+            VTR_LOG("%f\t", cap);
+        }
+        VTR_LOG("\n");
+    }
+
+    VTR_ASSERT(false);
+
     // Initialize the bins with the node positions.
     // TODO: Encapsulate this into a class.
     size_t grid_width = g_vpr_ctx.device().grid.width();
@@ -357,6 +580,7 @@ void FlowBasedLegalizer::legalize(PartialPlacement &p_placement) {
     }
 }
 
+/*
 // Helper function that removes the placement information of a cluster located
 // at a given sub_tile.
 // This was taken from place/cut_spreader.cpp
@@ -386,6 +610,7 @@ static inline void bind_subtile(ClusterBlockId blk, t_pl_loc sub_tile) {
     place_ctx.grid_blocks.set_block_at_location(sub_tile, blk);
     place_ctx.grid_blocks.set_usage({sub_tile.x, sub_tile.y, sub_tile.layer}, place_ctx.grid_blocks.get_usage({sub_tile.x, sub_tile.y, sub_tile.layer}) + 1);
 }
+*/
 
 // TODO: Move this into its own file.
 void FullLegalizer::legalize(PartialPlacement& p_placement) {
