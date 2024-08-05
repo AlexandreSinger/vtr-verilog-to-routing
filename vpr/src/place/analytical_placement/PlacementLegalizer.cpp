@@ -2,6 +2,7 @@
 #include "PlacementLegalizer.h"
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <queue>
 #include <stack>
@@ -22,17 +23,20 @@
 #include "vtr_assert.h"
 #include "vtr_list.h"
 #include "vtr_log.h"
+#include "vtr_ndmatrix.h"
 
 namespace {
 
 // A volume of primitives. A P-dimensional quantity (where P is the total
-// number of unieque primitives) which is used to specify the capacity of a
+// number of unique primitives) which is used to specify the capacity of a
 // tile and the "size" of a molecule in primitives.
 struct PrimitiveVolume {
     // Internally the primitive volume is a vector.
     // FIXME: This vector is likely very sparse; may be more efficient to
     //        store as a list.
     std::vector<float> primitive_lengths;
+
+    PrimitiveVolume() = delete;
     PrimitiveVolume(size_t num_unique_primitives) : primitive_lengths(num_unique_primitives, 0.f) {}
 
     void add_length(size_t primitive_id, float amount) {
@@ -51,7 +55,26 @@ struct PrimitiveVolume {
         return *this;
     }
 
-    void print() {
+    PrimitiveVolume& operator-=(const PrimitiveVolume& other) {
+        size_t num_primitives = primitive_lengths.size();
+        for (size_t i = 0; i < num_primitives; i++) {
+            primitive_lengths[i] -= other.get_length(i);
+        }
+        return *this;
+    }
+
+    void clear() {
+        std::fill(primitive_lengths.begin(), primitive_lengths.end(), 0.f);
+    }
+
+    bool empty() const {
+        return std::all_of(primitive_lengths.begin(), primitive_lengths.end(),
+                           [](float l) {
+                                return l == 0.f;
+                            });
+    }
+
+    void print() const {
         for (float length : primitive_lengths) {
             VTR_LOG("%.1f\t", length);
         }
@@ -61,11 +84,19 @@ struct PrimitiveVolume {
 
 class ArchModel {
 public:
-
-
+    // FIXME: There is a fundamental issue with the algorithm. Equivalent sites and modes cascade to make things troublesome.
+    //      - sub-tiles have capacity (so the sites are defined by this).
+    //      - pb_type has num_pb (but shouldnt these be sites too?) (currently we do no do this which I think is wrong).
+    //      - Then modes can cascade, so this becomes a real issue...
+    //          - Maybe permutations are themselves vectors?
+    //      - Maybe bring this up to VB...
     ArchModel(const AtomNetlist &netlist) : atom_netlist(netlist) {
         // FIXME: The models are not sufficient. We need to distinguish 6-LUT from 5-LUT!
         //          - Same problem for RAMs and DSPs.
+        //          - How pack/cluster_util.cpp handles feasibility may be a hint.
+        //          - Perhaps we give memory a "size" comparible to the number of bits it can support
+        //            and LUTs the number of input ports and we just pack them in based on that
+        //            (basically volume is not number of LUTs but some kind of mass).
         // FIXME: LUTs have an implicit mode called "wire". What do we do in that case?
         t_model* lib_models = g_vpr_ctx.device().arch->model_library;
         t_model* curr_model = lib_models;
@@ -94,8 +125,8 @@ public:
 
     // FIXME: Need a struct to hold the capacity / size information in a clean way such that we can perform math operations on them.
 
-    void get_mode_permutations_recurse(std::vector<float> permutation, std::vector<std::vector<float>> &permutations, const t_mode &mode, int pb_child_idx, int cummulative_num_pb,
-                                std::vector<std::vector<std::vector<float>>> &child_pb_permutations_memoization) {
+    void get_mode_permutations_recurse(PrimitiveVolume permutation, std::vector<PrimitiveVolume> &permutations, const t_mode &mode, int pb_child_idx, int cummulative_num_pb,
+                                std::vector<std::vector<PrimitiveVolume>> &child_pb_permutations_memoization) {
         VTR_LOG("\t\tRecurse id: %d\n", pb_child_idx);
         // If this is the last child pb, this is a full permutation. Add it.
         if (pb_child_idx == mode.num_pb_type_children) {
@@ -111,40 +142,39 @@ public:
             get_model_permutations(&mode.pb_type_children[pb_child_idx], child_pb_permutations_memoization[pb_child_idx], cummulative_num_pb);
         }
         // For each of the child_pb permutations, accumulate into the partial permutation for this mode.
-        for (const auto &child_pb_permutation : child_pb_permutations_memoization[pb_child_idx]) {
-            std::vector<float> new_permutation = permutation;
-            for (size_t i = 0; i < num_unique_atoms; i++) {
-                new_permutation[i] += child_pb_permutation[i];
-            }
+        for (const PrimitiveVolume &child_pb_permutation : child_pb_permutations_memoization[pb_child_idx]) {
+            PrimitiveVolume new_permutation = permutation;
+            new_permutation += child_pb_permutation;
             // Recurse to construct full permutation from partial.
             get_mode_permutations_recurse(std::move(new_permutation), permutations, mode, pb_child_idx + 1, cummulative_num_pb, child_pb_permutations_memoization);
         }
     }
 
     // Entry point for getting the mode permutations.
-    void get_mode_permutations(const t_mode &mode, std::vector<std::vector<float>> &permutations, int cummulative_num_pb) {
+    void get_mode_permutations(const t_mode &mode, std::vector<PrimitiveVolume> &permutations, int cummulative_num_pb) {
         VTR_LOG("Getting permutations of mode: %s\n", mode.name);
         if (mode.num_pb_type_children == 0) {
             VTR_LOG("\tMode has no children. No permutations for this mode.\n");
             return;
         }
-        std::vector<float> mode_permutation_seed(num_unique_atoms, 0.f);
-        std::vector<std::vector<std::vector<float>>> child_pb_permutations_memoization;
+        PrimitiveVolume mode_permutation_seed(num_unique_atoms);
+        std::vector<std::vector<PrimitiveVolume>> child_pb_permutations_memoization;
         get_mode_permutations_recurse(mode_permutation_seed, permutations, mode, 0, cummulative_num_pb, child_pb_permutations_memoization);
     }
 
     // NOTE: This is very expensive to calculate. Should minimize how often it
     //       is called. Also the returned vector will be very large. Should limit
     //       how much it is stored.
-    void get_model_permutations(t_pb_type *pb_type_ptr, std::vector<std::vector<float>> &permutations, int cummulative_num_pb) {
+    void get_model_permutations(t_pb_type *pb_type_ptr, std::vector<PrimitiveVolume> &permutations, int cummulative_num_pb) {
         VTR_LOG("Getting Model Permutations of %s\n", pb_type_ptr->name);
         int num_modes = pb_type_ptr->num_modes;
         int num_instances = cummulative_num_pb * pb_type_ptr->num_pb;
         // If this is a leaf/primitive, only one permutation is possible.
         if (num_modes == 0 && pb_type_ptr->model != nullptr) {
             VTR_LOG("\tModel is a leaf.\n");
-            std::vector<float> leaf_capacity(num_unique_atoms, 0.f);
-            leaf_capacity[blk_model_to_id[pb_type_ptr->model]] += num_instances;
+            PrimitiveVolume leaf_capacity(num_unique_atoms);
+            const size_t primitive_id = blk_model_to_id[pb_type_ptr->model];
+            leaf_capacity.add_length(primitive_id, num_instances);
             permutations.push_back(std::move(leaf_capacity));
             return;
         }
@@ -161,20 +191,18 @@ public:
     // Note: There is an implicit simplification here regarding sub-tiles.
     //       A tile may have multiple sub-tiles in the same location, each has their 
     //       own sub-tile index. Here, we are using sub-tile ID, where each id is unique.
-    std::vector<std::vector<float>> get_capacity(int tile_x, int tile_y, int tile_layer, int sub_tile_id) {
+    std::vector<PrimitiveVolume> get_capacity(const t_physical_tile_type& tile_type, int sub_tile_id) {
         // FIXME: How do we take into account the height/width of a tile?
-        const auto &device_ctx = g_vpr_ctx.device();
-        t_physical_tile_type_ptr tile_type_ptr = device_ctx.grid.get_physical_type({tile_x, tile_y, tile_layer});
-        if (tile_type_ptr->is_empty()) {
-            std::vector<float> empty_capacity(num_unique_atoms, 0.f);
+        if (tile_type.is_empty()) {
+            PrimitiveVolume empty_capacity(num_unique_atoms);
             return {std::move(empty_capacity)};
         }
-        const std::vector<t_sub_tile>& sub_tiles = tile_type_ptr->sub_tiles;
+        const std::vector<t_sub_tile>& sub_tiles = tile_type.sub_tiles;
         const t_sub_tile& sub_tile = sub_tiles[sub_tile_id];
         // FIXME: Need to handle sub-tile capacity. The capacity means we can have
         //        N copies of whatever combination of permutations we want.
         // int sub_tile_cap = sub_tile.capacity.total();
-        std::vector<std::vector<float>> model_permutations;
+        std::vector<PrimitiveVolume> model_permutations;
         for (t_logical_block_type_ptr log_blk_ty_ptr : sub_tile.equivalent_sites) {
             t_pb_type* pb_type = log_blk_ty_ptr->pb_type;
             get_model_permutations(pb_type, model_permutations, 1);
@@ -214,21 +242,265 @@ public:
         return model_permutations;
     }
 
-    std::vector<float> get_size(t_pack_molecule* mol) {
-        std::vector<float> size(num_unique_atoms, 0.f);
+    PrimitiveVolume get_volume(t_pack_molecule* mol) {
+        PrimitiveVolume volume(num_unique_atoms);
         for (const AtomBlockId &blk_id : mol->atom_block_ids) {
             const t_model* blk_model = atom_netlist.block_model(blk_id);
             size_t id = blk_model_to_id[blk_model];
-            size[id] += 1;
+            volume.add_length(id, 1);
         }
-        return size;
+        return volume;
     }
 
     std::vector<const t_model*> id_to_blk_model;
+    size_t num_unique_atoms;
 private:
     const AtomNetlist& atom_netlist;
-    size_t num_unique_atoms;
     std::unordered_map<const t_model*, size_t> blk_model_to_id;
+};
+
+// Stores information of different tile types.
+//  - How many sub-tiles it has
+//  - The permutations of capacity each sub-tile can attain
+//  - The capacity (number of sites) of each sub-tile
+// This exists to be more efficient with space since the capacity permutations
+// may get quite large. Since tiles are replicated across the chip, its better
+// to store the per-tile arch info separately.
+struct ArchTileInfo {
+    const t_physical_tile_type& physical_tile_type;
+    // sub_tile_index -> permutations of capacity that each site can attain.
+    std::vector<std::vector<PrimitiveVolume>> sub_tile_capacity_permutations;
+    ArchTileInfo(const t_physical_tile_type& tile_type) : physical_tile_type(tile_type) {}
+};
+
+// FIXME: A more appropriate name for this would be SiteModel
+//      - Or maybe the atoms in the site can stay (since every model will need
+//          that) but the utilization can move out. Perhaps give every site
+//          a unique ID; however, how do we know how many sites we will need?
+struct ArchSite {
+private:
+    // Current utilization of the site.
+    PrimitiveVolume current_utilization;
+    std::unordered_set<size_t> atoms_in_site;
+public:
+    ArchSite(size_t num_unique_atoms) : current_utilization(num_unique_atoms) {}
+
+    void clear() {
+        current_utilization.clear();
+        atoms_in_site.clear();
+    }
+
+    bool empty() const {
+        return atoms_in_site.empty();
+    }
+
+    inline void remove_node_from_site(size_t node_id, const PrimitiveVolume& volume) {
+        // TODO: Make debug assert
+        VTR_ASSERT(atoms_in_site.find(node_id) != atoms_in_site.end());
+        atoms_in_site.erase(node_id);
+        current_utilization -= volume;
+    }
+
+    inline void add_node_to_site(size_t node_id, const PrimitiveVolume& volume) {
+        // TODO: Make debug assert
+        VTR_ASSERT(atoms_in_site.find(node_id) == atoms_in_site.end());
+        atoms_in_site.insert(node_id);
+        current_utilization -= volume;
+    }
+};
+
+struct ArchSubTile {
+    // All sub-tiles contain at least one site
+    // All sites implement the same permutations per tile.
+    std::vector<ArchSite> sites;
+};
+
+// TODO: To improve performance, the tile could contain the max of all tile volumes.
+//       This can serve as a quick check to see if an atom can fit in the tile at all.
+struct ArchTile {
+    // Index into the tiles array of the ArchGraph.
+    size_t tile_index;
+    const ArchTileInfo& tile_info;
+    // The tile_x and tile_y coordinates of this tile (corner).
+    int x;
+    int y;
+    // All tiles contain at least one sub-tile
+    // NOTE: Order matters here, certain sub-tiles will be in order specified
+    //       by VTR's physical architecture specification.
+    std::vector<ArchSubTile> sub_tiles;
+    // Neighbors of this tile (i.e. tiles directly adjacent to this tile).
+    //  - These are other tiles that directly share a side with this tile.
+    //  - Does not include diagonals (TODO: should it?)
+    std::vector<std::reference_wrapper<const ArchTile>> neighbors;
+    // These are the nodes that could not fit into this tile but were placed here.
+    ArchSite overflow_site;
+
+    ArchTile(const ArchTileInfo& info, size_t num_unique_atoms) : tile_info(info), overflow_site(num_unique_atoms) {}
+};
+
+class TileGraphOld {
+    // NOTE: t_physical_tile_type::index will also match the index into this
+    //       vector.
+    std::vector<ArchTileInfo> tile_infos;
+    std::vector<ArchTile> tiles;
+    // Grid of indices for each tile. Used only for using grid position to
+    // find the tile. Will return the SAME tile if it covers different locations.
+    // Holds the index in the tiles array for that tile.
+    vtr::NdMatrix<size_t, 2> tile_grid;
+    // FIXME: The architecture model should be separate from the Tile Graph
+    ArchModel arch_model;
+
+    struct AtomGraphPos {
+        size_t tile_id;
+        size_t sub_tile_index;
+        size_t site_index;
+        bool in_overflow_site = false;
+    };
+    // TODO: Maybe this can be made a vector.
+    std::unordered_map<size_t, AtomGraphPos> atom_node_id_pos;
+public:
+    TileGraphOld() = delete;
+    TileGraphOld(const DeviceContext& device, const AtomNetlist& netlist) : tile_grid({device.grid.width(), device.grid.height()}), arch_model(netlist) {
+        // Construct the info for each tile type
+        for (const t_physical_tile_type &physical_tile_type : device.physical_tile_types) {
+            ArchTileInfo tile_info(physical_tile_type);
+            size_t num_sub_tiles = physical_tile_type.sub_tiles.size();
+            for (size_t sub_tile_idx = 0; sub_tile_idx < num_sub_tiles; sub_tile_idx++) {
+                tile_info.sub_tile_capacity_permutations.push_back(arch_model.get_capacity(physical_tile_type, sub_tile_idx));
+            }
+            tile_infos.push_back(std::move(tile_info));
+        }
+        // Construct each of the tiles.
+        size_t grid_width = device.grid.width();
+        size_t grid_height = device.grid.height();
+        for (size_t x = 0; x < grid_width; x++) {
+            for (size_t y = 0; y < grid_height; y++) {
+                // Ignoring 3D placement for now. Will likely require modification to
+                // the solver and legalizer.
+                t_physical_tile_loc tile_loc = {(int)x, (int)y, 0};
+                // Is this the root location? Only create tiles for roots.
+                size_t width_offset = device.grid.get_width_offset(tile_loc);
+                size_t height_offset = device.grid.get_height_offset(tile_loc);
+                if (width_offset != 0 || height_offset != 0) {
+                    tile_grid[x][y] = tile_grid[x - width_offset][y - height_offset];
+                    continue;
+                }
+                // Create the ArchTile
+                t_physical_tile_type_ptr physical_type = device.grid.get_physical_type(tile_loc);
+                ArchTile arch_tile(tile_infos[physical_type->index], arch_model.num_unique_atoms);
+                arch_tile.x = x;
+                arch_tile.y = y;
+                size_t num_unique_sub_tiles = physical_type->sub_tiles.size();
+                arch_tile.sub_tiles.resize(num_unique_sub_tiles);
+                for (size_t sub_tile_idx = 0; sub_tile_idx < num_unique_sub_tiles; sub_tile_idx++) {
+                    int num_sites = physical_type->sub_tiles[sub_tile_idx].capacity.total();
+                    arch_tile.sub_tiles[sub_tile_idx].sites.resize(num_sites, ArchSite(arch_model.num_unique_atoms));
+                }
+                // Insert the tile into the tiles array
+                arch_tile.tile_index = tiles.size();
+                tile_grid[x][y] = arch_tile.tile_index;
+                tiles.push_back(std::move(arch_tile));
+            }
+        }
+        // Connect the tiles through neighbors.
+        for (size_t x = 0; x < grid_width; x++) {
+            for (size_t y = 0; y < grid_height; y++) {
+                // Ignoring 3D placement for now. Will likely require modification to
+                // the solver and legalizer.
+                t_physical_tile_loc tile_loc = {(int)x, (int)y, 0};
+                // Is this the root location?
+                if (device.grid.get_width_offset(tile_loc) != 0 ||
+                    device.grid.get_height_offset(tile_loc) != 0) {
+                    continue;
+                }
+                ArchTile &arch_tile = tiles[tile_grid[x][y]];
+                size_t tile_width = arch_tile.tile_info.physical_tile_type.width;
+                size_t tile_height = arch_tile.tile_info.physical_tile_type.height;
+                // Add the neighbors.
+                std::unordered_set<size_t> neighbor_tile_ids;
+                // Add unique tiles on left and right sides
+                for (size_t ty = y; ty < y + tile_height; ty++) {
+                    if (x >= 1)
+                        neighbor_tile_ids.insert(tile_grid[x - 1][ty]);
+                    if (x <= grid_width - tile_width - 1)
+                        neighbor_tile_ids.insert(tile_grid[x + grid_width][ty]);
+                } 
+                // Add unique tiles on the top and bottom
+                for (size_t tx = x; tx < x + tile_width; tx++) {
+                    if (y >= 1)
+                        neighbor_tile_ids.insert(tile_grid[tx][y - 1]);
+                    if (y <= grid_height - tile_height - 1)
+                        neighbor_tile_ids.insert(tile_grid[tx][y + grid_height]);
+                } 
+                // Insert the neighbors into the tiles
+                for (size_t tile_id : neighbor_tile_ids) {
+                    arch_tile.neighbors.push_back(tiles[tile_id]);
+                }
+            }
+        }
+    }
+
+    void add_atom_to_tile(int x, int y, size_t node_id, const PartialPlacement& p_placement) {
+        // TODO: Make these assert debug. May get expensive.
+        VTR_ASSERT(x >= 0 && x < (int)tile_grid.dim_size(0));
+        VTR_ASSERT(y >= 0 && y < (int)tile_grid.dim_size(1));
+        VTR_ASSERT(atom_node_id_pos.find(node_id) == atom_node_id_pos.end());
+        ArchTile& arch_tile = tiles[tile_grid[x][y]];
+        PrimitiveVolume atom_volume = arch_model.get_volume(p_placement.node_id_to_mol[node_id]);
+        // Try to add it to a site in the tile
+        // TODO:
+        // If a site cannot be found, add it to the unplaceable nodes in the tile.
+        // TODO: Add both of these to an accessor for safety!
+        atom_node_id_pos[node_id] = {arch_tile.tile_index, 0, 0, true};
+        arch_tile.overflow_site.add_node_to_site(node_id, atom_volume);
+    }
+
+    void remove_atom_from_tile(size_t node_id, const PartialPlacement& p_placement) {
+        VTR_ASSERT(atom_node_id_pos.find(node_id) != atom_node_id_pos.end());
+        const AtomGraphPos &atom_pos = atom_node_id_pos[node_id];
+        ArchTile &tile = tiles[atom_pos.tile_id];
+        PrimitiveVolume atom_volume = arch_model.get_volume(p_placement.node_id_to_mol[node_id]);
+        if (atom_pos.in_overflow_site) {
+            // If it is in the overflow site of the tile, just remove from the
+            // utilization of the overflow site.
+            tile.overflow_site.remove_node_from_site(node_id, atom_volume);
+            atom_node_id_pos.erase(node_id);
+            return;
+        }
+        // Remove the volume from the utilization of the site.
+        ArchSubTile& sub_tile = tile.sub_tiles[atom_pos.sub_tile_index];
+        ArchSite& site = sub_tile.sites[atom_pos.site_index];
+        site.remove_node_from_site(node_id, atom_volume);
+        atom_node_id_pos.erase(node_id);
+        // If there are atoms in the overflow site of the tile, removing this
+        // tile may have opened up some space for something in the overflow!
+        if (!tile.overflow_site.empty()) {
+            // TODO:
+        }
+    }
+
+    std::vector<std::reference_wrapper<const ArchTile>> get_overfilled_tiles() {
+        // TODO: This can be made more efficient by storing this information.
+        std::vector<std::reference_wrapper<const ArchTile>> overfilled_tiles;
+        for (const ArchTile& tile : tiles) {
+            // Any tile with a non-empty overflow site is overfilled.
+            if (!tile.overflow_site.empty())
+                overfilled_tiles.push_back(tile);
+        }
+        return overfilled_tiles;
+    }
+
+    // Reset data to the grid that has been modified.
+    void reset() {
+        for (ArchTile& tile : tiles) {
+            tile.overflow_site.clear();
+            for (ArchSubTile& sub_tile : tile.sub_tiles) {
+                for (ArchSite& site : sub_tile.sites) {
+                    site.clear();
+                }
+            }
+        }
+    }
 };
 
 // TODO: This should probably be moved into its own class for ArchModel.
@@ -461,17 +733,16 @@ void FlowBasedLegalizer::legalize(PartialPlacement &p_placement) {
     VTR_LOG("Running Flow-Based Legalizer\n");
 
     ArchModel arch_model(p_placement.atom_netlist);
+    const auto &device_ctx = g_vpr_ctx.device();
+    t_physical_tile_type_ptr tile_type_ptr = device_ctx.grid.get_physical_type({2, 1, 0});
 
-    const std::vector<std::vector<float>> sub_tile_capacity = arch_model.get_capacity(2,1,0,0);
+    const std::vector<PrimitiveVolume> sub_tile_capacity = arch_model.get_capacity(*tile_type_ptr,0);
     for (const t_model* model : arch_model.id_to_blk_model) {
         VTR_LOG("%s\t", model->name);
     }
     VTR_LOG("\n");
     for (const auto &capacity : sub_tile_capacity) {
-        for (float cap : capacity) {
-            VTR_LOG("%f\t", cap);
-        }
-        VTR_LOG("\n");
+        capacity.print();
     }
 
     VTR_ASSERT(false);
