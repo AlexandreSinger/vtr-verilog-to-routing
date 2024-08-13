@@ -14,11 +14,11 @@
 #include "vpr_types.h"
 #include "vtr_assert.h"
 
-PartialPlacement::PartialPlacement(const AtomNetlist& netlist,                                                                                                                                                            
-                                   const std::set<AtomBlockId>& fixed_blocks,                                                                                                                                          
-                                   std::map<AtomBlockId, double>& fixed_blocks_x,                                                                                                                                             
-                                   std::map<AtomBlockId, double>& fixed_blocks_y) : atom_netlist(netlist) {
-
+PartialPlacement::PartialPlacement(const AtomNetlist& netlist,
+                                   const std::set<AtomBlockId>& fixed_blocks,
+                                   std::map<AtomBlockId, double>& fixed_blocks_x,
+                                   std::map<AtomBlockId, double>& fixed_blocks_y)
+    : atom_netlist(netlist) {
     const AtomContext& atom_ctx = g_vpr_ctx.atom();
 
     std::vector<std::unordered_set<t_pack_molecule*>> interesting_nets;
@@ -85,7 +85,7 @@ PartialPlacement::PartialPlacement(const AtomNetlist& netlist,
     // FIXME: We should experiment with having duplicate pins! It is possible
     //        that a block would have multiple pin inputs connected to the same
     //        net. This should give that block more power...
-    for (const std::unordered_set<t_pack_molecule*> &mols : interesting_nets) {
+    for (const std::unordered_set<t_pack_molecule*>& mols : interesting_nets) {
         // If the number of molecules in a net is 1 or less, we do not care.
         // This can happen when a LUT + FF are packed together and now the
         // net connects to itself.
@@ -94,7 +94,7 @@ PartialPlacement::PartialPlacement(const AtomNetlist& netlist,
         // If the molecules connected by a net are all fixed, then we do not care
         // about this net.
         bool is_all_fixed = true;
-        for (t_pack_molecule *mol : mols) {
+        for (t_pack_molecule* mol : mols) {
             if (moveable_mols.find(mol) != moveable_mols.end()) {
                 is_all_fixed = false;
                 break;
@@ -105,7 +105,7 @@ PartialPlacement::PartialPlacement(const AtomNetlist& netlist,
         // Insert these nodes into the AP Netlist.
         std::vector<size_t> net_nodes;
         net_nodes.reserve(mols.size());
-        for (t_pack_molecule *mol : mols) {
+        for (t_pack_molecule* mol : mols) {
             net_nodes.push_back(mol_to_node_id[mol]);
         }
         ap_netlist.emplace_back(std::move(net_nodes));
@@ -151,18 +151,20 @@ double PartialPlacement::get_HPWL() {
 }
 
 // This function checks whether all nodes of this placement reside within the board
-bool PartialPlacement::is_valid_partial_placement(){
-    if (node_loc_x.size() != node_loc_y.size()) 
-        return false; 
+bool PartialPlacement::is_valid_partial_placement() {
     bool result = true;
-    for (size_t node_id = 0; node_id < node_loc_x.size(); node_id++){
+    if (node_loc_x.size() != node_loc_y.size()) {
+        VTR_LOG("dim of node loc x and y did not match\n");
+        result = false;
+    }
+    for (size_t node_id = 0; node_id < node_loc_x.size(); node_id++) {
         result &= is_valid_node(node_id);
-    } 
-    return result; 
+    }
+    return result;
 }
 
-// Checks whether a node is well defined (not NaN) within the board 
-bool PartialPlacement::is_valid_node(size_t node_id){
+// Checks whether a node is well defined (not NaN) within the board
+bool PartialPlacement::is_valid_node(size_t node_id) {
     const DeviceContext& device_ctx = g_vpr_ctx.device();
     size_t grid_width = device_ctx.grid.width();
     size_t grid_height = device_ctx.grid.height();
@@ -178,14 +180,14 @@ bool PartialPlacement::is_valid_node(size_t node_id){
     if (node_loc_x[node_id] >= grid_width) {
         result = false;
         VTR_LOG("Too Large! node_id %zu's x value is %f, width is %zu\n", node_id, node_loc_x[node_id], grid_width);
-    }else if(node_loc_x[node_id] < 0) {
+    } else if (node_loc_x[node_id] < 0) {
         result = false;
         VTR_LOG("Too Small! node_id %zu's x value is %f\n", node_id, node_loc_x[node_id]);
     }
     if (node_loc_y[node_id] >= grid_height) {
         result = false;
         VTR_LOG("Too Large! node_id %zu's y value is %f, height is %zu\n", node_id, node_loc_y[node_id], grid_width);
-    }else if(node_loc_y[node_id] < 0) {
+    } else if (node_loc_x[node_id] < 0) {
         result = false;
         VTR_LOG("Too Small! node_id %zu's y value is %f\n", node_id, node_loc_y[node_id]);
     }
@@ -195,7 +197,7 @@ bool PartialPlacement::is_valid_node(size_t node_id){
 // This function print the the board with the current placement to stdout
 // It does not have infinit resolutions. Nodes too close to each other will be represented by the same charactor
 // Concentrated nodes are represented by brighter colors, listed in the switch statment
-void PartialPlacement::unicode_art(){
+void PartialPlacement::unicode_art() {
     VTR_LOG("unicode_art start\n");
     const DeviceContext& device_ctx = g_vpr_ctx.device();
     size_t device_width = device_ctx.grid.width();
@@ -204,23 +206,23 @@ void PartialPlacement::unicode_art(){
     size_t board_height = device_height * 5;
     std::vector<std::vector<int>> board(board_height, std::vector<int>(board_width, 0));
     for (size_t node_id = 0; node_id < num_nodes; node_id++) {
-        unsigned node_x_relative = node_loc_x[node_id]/device_width*board_width;
-        unsigned node_y_relative = node_loc_y[node_id]/device_height*board_height;
-        if(node_id < num_moveable_nodes){
+        unsigned node_x_relative = node_loc_x[node_id] / device_width * board_width;
+        unsigned node_y_relative = node_loc_y[node_id] / device_height * board_height;
+        if (node_id < num_moveable_nodes) {
             board[node_x_relative][node_y_relative]++;
-        }else{
+        } else {
             board[node_x_relative][node_y_relative] = -1;
         }
     }
     int max = 0;
-    for(unsigned y_board_id = 0; y_board_id < board_height; y_board_id++)
-        for(unsigned x_board_id = 0; x_board_id < board_width; x_board_id++)
+    for (unsigned y_board_id = 0; y_board_id < board_height; y_board_id++)
+        for (unsigned x_board_id = 0; x_board_id < board_width; x_board_id++)
             if (board[x_board_id][y_board_id] > max)
                 max = board[x_board_id][y_board_id];
-    for(unsigned y_board_id = 0; y_board_id < board_height; y_board_id++){
-        for(unsigned x_board_id = 0; x_board_id < board_width; x_board_id++){
+    for (unsigned y_board_id = 0; y_board_id < board_height; y_board_id++) {
+        for (unsigned x_board_id = 0; x_board_id < board_width; x_board_id++) {
             int density = board[y_board_id][x_board_id];
-            int density_range = std::floor((double)density/(double)max*6);
+            int density_range = std::floor((double)density / (double)max * 6);
             // if (density >=0 && density <=9){
             //     char digit[8] = "0️⃣";
             //     digit[0] += density;
@@ -234,33 +236,32 @@ void PartialPlacement::unicode_art(){
             // }
             switch (density_range) {
                 default:
-                VTR_ASSERT(0 && "unexpected range!");
-                break;
+                    VTR_ASSERT(0 && "unexpected range!");
+                    break;
                 case -1:
-                VTR_LOG("⬜");
-                break;
+                    VTR_LOG("⬜");
+                    break;
                 case 0:
-                VTR_LOG("⬛");
-                break;
+                    VTR_LOG("⬛");
+                    break;
                 case 1:
-                VTR_LOG("🟫");
-                break;
+                    VTR_LOG("🟫");
+                    break;
                 case 2:
-                VTR_LOG("🟩");
-                break;
+                    VTR_LOG("🟩");
+                    break;
                 case 3:
-                VTR_LOG("🟨");
-                break;
+                    VTR_LOG("🟨");
+                    break;
                 case 4:
-                VTR_LOG("🟧");
-                break;
+                    VTR_LOG("🟧");
+                    break;
                 case 5:
-                VTR_LOG("🟥");
-                break;
+                    VTR_LOG("🟥");
+                    break;
                 case 6:
-                VTR_LOG("🟪");
-                break;
-                
+                    VTR_LOG("🟪");
+                    break;
             }
         }
         VTR_LOG("\n");
