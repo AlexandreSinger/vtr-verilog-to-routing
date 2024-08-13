@@ -19,8 +19,10 @@ class AnalyticalSolver {
   public:
     virtual ~AnalyticalSolver() {}
     virtual void solve(unsigned iteration, PartialPlacement& p_placement) = 0;
+#ifdef ANALYTICAL_PLACEMENT_TIMING
     void print_timing();
     std::unordered_map<std::string, double> time_counter;
+#endif
 };
 
 std::unique_ptr<AnalyticalSolver> make_analytical_solver(e_analytical_solver solver_type);

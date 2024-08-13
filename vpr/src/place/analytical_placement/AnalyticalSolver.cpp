@@ -18,10 +18,12 @@
 #include "vpr_error.h"
 #include "vtr_assert.h"
 
+#ifdef ANALYTICAL_PLACEMENT_TIMING
 void AnalyticalSolver::print_timing() {
     for (const auto& p : time_counter)
         VTR_LOG("%s: %f\n", p.first.c_str(), p.second);
 }
+#endif
 
 std::unique_ptr<AnalyticalSolver> make_analytical_solver(e_analytical_solver solver_type) {
     if (solver_type == e_analytical_solver::QP_HYBRID)
@@ -167,15 +169,21 @@ static inline void populate_hybrid_matrix(Eigen::SparseMatrix<double>& A_sparse,
 }
 
 void QPHybridSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
+#ifdef ANALYTICAL_PLACEMENT_TIMING
     auto timer1 = std::chrono::high_resolution_clock::now();
+#endif
     if (iteration == 0) {
+#ifdef ANALYTICAL_PLACEMENT_TIMING
         time_counter["update matrix"] = 0;
         time_counter["build matrix"] = 0;
         time_counter["solve matrix"] = 0;
         time_counter["total solve time"] = 0;
+#endif
         populate_hybrid_matrix(A_sparse, b_x, b_y, p_placement);
     }
+#ifdef ANALYTICAL_PLACEMENT_TIMING
     auto timer2 = std::chrono::high_resolution_clock::now();
+#endif
     Eigen::SparseMatrix<double> A_sparse_diff = Eigen::SparseMatrix<double>(A_sparse);
     Eigen::VectorXd b_x_diff = Eigen::VectorXd(b_x);
     Eigen::VectorXd b_y_diff = Eigen::VectorXd(b_y);
@@ -183,8 +191,9 @@ void QPHybridSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
         populate_update_hybrid_matrix(A_sparse_diff, b_x_diff, b_y_diff, p_placement, iteration);
 
     VTR_LOG("Running Quadratic Solver\n");
-
+#ifdef ANALYTICAL_PLACEMENT_TIMING
     auto timer3 = std::chrono::high_resolution_clock::now();
+#endif
     // Solve Ax=b and fills placement with x.
     Eigen::VectorXd x, y;
     Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper> cg;
@@ -197,16 +206,20 @@ void QPHybridSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
     VTR_ASSERT(cg.info() == Eigen::Success && "Conjugate Gradient failed at solving b_x!");
     y = cg.solve(b_y_diff);
     VTR_ASSERT(cg.info() == Eigen::Success && "Conjugate Gradient failed at solving b_y!");
+#ifdef ANALYTICAL_PLACEMENT_TIMING
     auto timer4 = std::chrono::high_resolution_clock::now();
+#endif
     for (size_t node_id = 0; node_id < p_placement.num_moveable_nodes; node_id++) {
         p_placement.node_loc_x[node_id] = x[node_id];
         p_placement.node_loc_y[node_id] = y[node_id];
     }
+#ifdef ANALYTICAL_PLACEMENT_TIMING
     auto timer5 = std::chrono::high_resolution_clock::now();
     time_counter["build matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer2 - timer1).count();
     time_counter["update matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer3 - timer2).count();
     time_counter["solve matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer4 - timer3).count();
     time_counter["total solve time"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer5 - timer1).count();
+#endif
 }
 
 void B2BSolver::initialize_placement_random_normal(PartialPlacement& p_placement) {
@@ -399,11 +412,15 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
         previous_hpwl = current_hpwl;
         VTR_LOG("placement hpwl in b2b loop: %f\n", p_placement.get_HPWL());
         VTR_ASSERT_DEBUG(p_placement.is_valid_partial_placement() && "did not produce a valid placement in b2b solve loop");
+#ifdef ANALYTICAL_PLACEMENT_TIMING
         auto timer1 = std::chrono::high_resolution_clock::now();
+#endif
         populate_matrix(p_placement);
         if (iteration != 0)
             populate_matrix_anchor(p_placement, iteration);
+#ifdef ANALYTICAL_PLACEMENT_TIMING
         auto timer2 = std::chrono::high_resolution_clock::now();
+#endif
         Eigen::VectorXd x, y;
         Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper> cg_x;
         Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper> cg_y;
@@ -423,7 +440,9 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
         VTR_ASSERT_DEBUG(cg_y.info() == Eigen::Success && "Conjugate Gradient failed at compute for A_y!");
         x = cg_x.solve(b_x);
         y = cg_y.solve(b_y);
+#ifdef ANALYTICAL_PLACEMENT_TIMING
         auto timer3 = std::chrono::high_resolution_clock::now();
+#endif
         // These assertion are not valid because we do not need cg to converge. And often they do not converge with in default max iterations.
         // VTR_ASSERT(cg_x.info() == Eigen::Success && "Conjugate Gradient failed at solving b_x!");
         // VTR_ASSERT(cg_y.info() == Eigen::Success && "Conjugate Gradient failed at solving b_y!");
@@ -439,18 +458,24 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
         // }while(std::abs(current_hpwl - previous_hpwl) < 5 && counter < 100);
         // current_hpwl > previous_hpwl - 10 would not work when this tries to grow and converge to legalized solution
         // simplest one for now
+#ifdef ANALYTICAL_PLACEMENT_TIMING
         time_counter["build matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer2 - timer1).count();
         time_counter["solve matrix"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer3 - timer2).count();
+#endif
     }
 }
 
 void B2BSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
+#ifdef ANALYTICAL_PLACEMENT_TIMING
     auto timer1 = std::chrono::high_resolution_clock::now();
+#endif
     // Need an initial placement to decide who are the bounding nodes.
     if (iteration == 0) {
+#ifdef ANALYTICAL_PLACEMENT_TIMING
         time_counter["build matrix"] = 0;
         time_counter["solve matrix"] = 0;
         time_counter["total solve time"] = 0;
+#endif
 
         initialize_placement_least_dense(p_placement);
         size_t ASize = p_placement.num_moveable_nodes;
@@ -471,8 +496,10 @@ void B2BSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
     p_placement.node_loc_x = node_loc_x_solved;
     p_placement.node_loc_y = node_loc_y_solved;
     b2b_solve_loop(iteration, p_placement);
+#ifdef ANALYTICAL_PLACEMENT_TIMING
     auto timer2 = std::chrono::high_resolution_clock::now();
     time_counter["total solve time"] += std::chrono::duration_cast<std::chrono::duration<double>>(timer2 - timer1).count();
+#endif
     // store solved position in data structure of this class
     // node_loc_x_solved = p_placement.node_loc_x;
     // node_loc_y_solved = p_placement.node_loc_y;

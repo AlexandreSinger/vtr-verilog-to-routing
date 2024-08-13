@@ -105,8 +105,9 @@ void run_analytical_placement_flow() {
         }
         // p_placement.unicode_art();
     }
-
+#ifdef ANALYTICAL_PLACEMENT_TIMING
     solver->print_timing();
+#endif
     // Export to a flat placement file.
     p_placement.export_to_flat_placement_file("flat_placement_file.txt");
 
