@@ -754,9 +754,3 @@ void FlowBasedLegalizer::legalize(PartialPlacement &p_placement) {
     arch_model.export_node_locations(p_placement, netlist);
 }
 
-void FullLegalizer::legalize(PartialPlacement& p_placement) {
-    (void)p_placement;
-    VTR_LOG("Running Full Legalizer\n");
-    VTR_ASSERT(false && "Full legalizer not implemented yet.");
-}
-
