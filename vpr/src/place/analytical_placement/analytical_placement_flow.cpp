@@ -3,6 +3,7 @@
 #include <memory>
 #include "PartialPlacement.h"
 #include "ap_netlist.h"
+#include "ap_prepacker.h"
 #include "ap_utils.h"
 #include "AnalyticalSolver.h"
 #include "PlacementLegalizer.h"
@@ -21,9 +22,12 @@ void run_analytical_placement_flow() {
     const DeviceContext& device_ctx = g_vpr_ctx.device();
     const UserPlaceConstraints& constraints = g_vpr_ctx.floorplanning().constraints;
 
-    // Create the ap netlist from the atom netlist.
-    // FIXME: Resolve name.
-    APNetlist ap_netlist = read_atom_netlist(mutable_atom_ctx, constraints);
+    // Run the prepacker
+    APPrepacker prepacker(mutable_atom_ctx);
+
+    // Create the ap netlist from the atom netlist using the result from the
+    // prepacker.
+    APNetlist ap_netlist = read_atom_netlist(mutable_atom_ctx, prepacker, constraints);
     print_ap_netlist_stats(ap_netlist);
 
     // Set up the partial placement object
