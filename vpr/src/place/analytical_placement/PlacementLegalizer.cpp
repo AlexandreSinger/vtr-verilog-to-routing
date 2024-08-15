@@ -10,10 +10,16 @@
 #include <vector>
 #include "PartialPlacement.h"
 #include "ap_netlist.h"
+#include "cluster_placement.h"
+#include "cluster_util.h"
+#include "clustered_netlist_fwd.h"
 #include "device_grid.h"
 #include "globals.h"
+#include "logic_types.h"
 #include "physical_types.h"
+#include "re_cluster_util.h"
 #include "vpr_context.h"
+#include "vpr_types.h"
 #include "vtr_assert.h"
 #include "vtr_log.h"
 #include "vtr_ndmatrix.h"
@@ -754,9 +760,142 @@ void FlowBasedLegalizer::legalize(PartialPlacement &p_placement) {
     arch_model.export_node_locations(p_placement, netlist);
 }
 
+namespace {
+
+// Manages clustering the atom netlist based on the partial placement
+class APClusterer {
+public:
+    APClusterer() {
+        primitive_candidate_block_types = identify_primitive_candidate_block_types();
+    }
+
+    // Start a new cluster for the given molecule.
+    // TODO: I wonder if the tile information can be passed in as a hint?
+    ClusterBlockId start_new_cluster(t_pack_molecule* seed_molecule) {
+        const AtomContext& atom_ctx = g_vpr_ctx.atom();
+        // /pack/cluster_util.cpp:start_new_cluster
+        //
+        // /pack/re_cluster_util.cpp:start_new_cluster_for_mol
+        //
+        // Re-clusterer requires a logical block type and mode to operate.
+        // The clusterer creates a list of candidate types which it sorts and
+        // then tries to cluster into them.
+        // Idea:
+        //  - use these candidate types on the re-clusterer.
+        //  - for now, ignore sorting the candidates (sorting helps for balance)
+        AtomBlockId root_atom = seed_molecule->atom_block_ids[seed_molecule->root];
+        const t_model* root_model = atom_ctx.nlist.block_model(root_atom);
+
+        auto itr = primitive_candidate_block_types.find(root_model);
+        VTR_ASSERT(itr != primitive_candidate_block_types.end());
+        const std::vector<t_logical_block_type_ptr>& candidate_types = itr->second;
+
+        bool success = false;
+        ClusterBlockId new_clb(total_clb_num);
+        t_clustering_data clustering_data;
+        t_lb_router_data* router_data = nullptr;
+        PartitionRegion temp_cluster_pr;
+        NocGroupId temp_noc_grp_id = NocGroupId::INVALID();
+        for (t_logical_block_type_ptr type : candidate_types) {
+            int num_modes = type->pb_graph_head->pb_type->num_modes;
+            for (int mode = 0; mode < num_modes; mode++) {
+                success = start_new_cluster_for_mol(seed_molecule,
+                                                    type,
+                                                    mode,
+                                                    feasible_block_array_size,
+                                                    enable_pin_feasibility_filter,
+                                                    new_clb,
+                                                    false /*during_packing*/,
+                                                    10 /*verbosity*/,
+                                                    clustering_data,
+                                                    &router_data,
+                                                    temp_cluster_pr,
+                                                    temp_noc_grp_id);
+                if (success)
+                    break;
+            }
+            if (success)
+                break;
+        }
+        // At least one candidate type must have worked.
+        VTR_ASSERT(success);
+        total_clb_num++;
+
+        return new_clb;
+    }
+    
+    // Add a molecule to the given cluster. May fail if the molecule cannot fit
+    // into the cluster.
+    bool add_mol_to_cluster(t_pack_molecule* mol, ClusterBlockId cluster_id) {
+        VTR_ASSERT(cluster_id.is_valid() && (size_t)cluster_id < total_clb_num);
+        int mol_size = get_array_size_of_molecule(mol);
+        std::unordered_set<AtomBlockId>& new_clb_atoms = cluster_to_mutable_atoms(cluster_id);
+        t_clustering_data clustering_data;
+        t_lb_router_data* new_router_data = nullptr;
+        bool is_added = pack_mol_in_existing_cluster(mol,
+                                                     mol_size,
+                                                     cluster_id,
+                                                     new_clb_atoms,
+                                                     false /*during_packing*/,
+                                                     clustering_data,
+                                                     new_router_data);
+        return is_added;
+    }
+    
+    // FIXME: These are passed into the clustering as clustering options.
+    //        Using default values for now.
+    static constexpr int feasible_block_array_size = 30;
+    static constexpr bool enable_pin_feasibility_filter = true;
+    std::map<const t_model*, std::vector<t_logical_block_type_ptr>> primitive_candidate_block_types;
+    size_t total_clb_num = 0;
+};
+
+} // namespace
+
 void FullLegalizer::legalize(PartialPlacement& p_placement) {
     (void)p_placement;
     VTR_LOG("Running Full Legalizer\n");
+
+    // Create an achitecture model to create the graph and put the molecules in
+    // their place.
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    SimpleArchModel arch_model(device_ctx);
+    arch_model.import_node_locations(p_placement, netlist);
+
+    APClusterer ap_clusterer;
+
+    // Create clusters for each tile.
+    for (size_t tile_id_idx = 0; tile_id_idx < arch_model.get_num_tiles(); tile_id_idx++) {
+        PlaceTileId tile_id = PlaceTileId(tile_id_idx);
+        // FIXME: Ignoring fixed blocks for now.
+        std::vector<APBlockId> blocks_in_tile = arch_model.get_all_moveable_blocks(tile_id, netlist);
+        // For each block in the cluster,
+        //  1) try to insert it into a cluster already in the tile
+        //  2) if that does not work, create a new cluster
+        std::vector<ClusterBlockId> clusters_in_tile;
+        for (APBlockId ap_blk_id : blocks_in_tile) {
+            // FIXME: The netlist stores a const pointer to mol; but the re-clusterer
+            // does not accept this. Need to fix one or the other.
+            // For now, using const_cast cause lazy.
+            t_pack_molecule* mol = const_cast<t_pack_molecule*>(netlist.block_molecule(ap_blk_id));
+            bool success = false;
+            for (ClusterBlockId cluster_blk_id : clusters_in_tile) {
+                success = ap_clusterer.add_mol_to_cluster(mol, cluster_blk_id);
+                if (success)
+                    break;
+            }
+            if (success)
+                break;
+            // If cannot fit into any other cluster in tile, create new cluster.
+            ClusterBlockId new_cluster_blk_id = ap_clusterer.start_new_cluster(mol);
+            clusters_in_tile.push_back(new_cluster_blk_id);
+        }
+    }
+
+    // Lock down fixed clusters?
+
+    // Move the clusters to legal positions
+
     VTR_ASSERT(false && "Full legalizer not implemented yet.");
 }
 
