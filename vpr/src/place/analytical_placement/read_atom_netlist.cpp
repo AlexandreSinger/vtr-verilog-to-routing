@@ -1,51 +1,22 @@
 
 #include "read_atom_netlist.h"
 #include "ap_netlist.h"
+#include "ap_prepacker.h"
 #include "atom_netlist.h"
 #include "atom_netlist_fwd.h"
 #include "netlist_fwd.h"
 #include "partition.h"
 #include "partition_region.h"
-#include "prepack.h"
 #include "vpr_context.h"
 #include "vpr_types.h"
 #include "vtr_assert.h"
 #include "vtr_geometry.h"
-#include "vtr_log.h"
 #include "vtr_time.h"
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-// Pre-pack the atoms into molecules
-// This will create "forced" packs (LUT+FF) and carry chains.
-// The molecules can be looked up in the atom_molecules member of the atom
-// context.
-// See /pack/prepack.h
-// Also see /pack/pack.cpp:try_pack
-static void prepack_atom_netlist(AtomContext& mutable_atom_ctx) {
-    VTR_LOG("Pre-Packing Atom Netlist\n");
-    std::vector<t_pack_patterns> list_of_pack_patterns = alloc_and_load_pack_patterns();
-    // This is a map from the AtomBlock to its expected lowest cost primitive.
-    std::unordered_map<AtomBlockId, t_pb_graph_node*> expected_lowest_cost_pb_gnode;
-    mutable_atom_ctx.list_of_pack_molecules.reset(alloc_and_load_pack_molecules(list_of_pack_patterns.data(), expected_lowest_cost_pb_gnode, list_of_pack_patterns.size()));
-    // Not entirely sure if this free can be put here. I do not like how the
-    // packer did it.
-    free_list_of_pack_patterns(list_of_pack_patterns);
-}
-
-APNetlist read_atom_netlist(AtomContext& mutable_atom_ctx, const UserPlaceConstraints& constraints) {
+APNetlist read_atom_netlist(const AtomContext& atom_ctx, const APPrepacker& prepacker, const UserPlaceConstraints& constraints) {
     vtr::ScopedStartFinishTimer timer("Read Atom Netlist to AP Netlist");
-
-    // Prepack the atom netlist into molecules.
-    // This will initialize a data structure in the Atom context which will
-    // dictate which atom goes into which molecule.
-    // TODO: This creates internal state which is hard to understand. Consider
-    //       having this method return the atom_to_molecule structure.
-    //       This can then be stored in the APNetlist class.
-    //       The list_of_pack_patterns may also be useful to keep.
-    prepack_atom_netlist(mutable_atom_ctx);
-    const std::multimap<AtomBlockId, t_pack_molecule*> &atom_molecules = mutable_atom_ctx.atom_molecules;
 
     // FIXME: What to do about the name and ID in this context? For now just
     //        using empty strings.
@@ -53,15 +24,13 @@ APNetlist read_atom_netlist(AtomContext& mutable_atom_ctx, const UserPlaceConstr
 
     // Add the APBlocks based on the atom block molecules. This essentially
     // creates supernodes.
-    // Each block has the name of the first block in the molecule.
+    // Each AP block has the name of the first atom block in the molecule.
     // Each port is named "<atom_blk_name>_<atom_port_name>"
     // Each net has the exact same name at the atom netlist
-    const AtomNetlist& atom_netlist = mutable_atom_ctx.nlist;
+    const AtomNetlist& atom_netlist = atom_ctx.nlist;
     for (AtomBlockId atom_blk_id : atom_netlist.blocks()) {
         // Get the molecule of this block
-        VTR_ASSERT(atom_molecules.count(atom_blk_id) == 1 && "Only expect one molecule for a given block.");
-        auto mol_range = atom_molecules.equal_range(atom_blk_id);
-        t_pack_molecule* mol = mol_range.first->second;
+        t_pack_molecule* mol = prepacker.get_atom_molecule(atom_blk_id, atom_ctx);
         // Create the AP block (if not already done)
         const std::string& first_blk_name = atom_netlist.block_name(mol->atom_block_ids[0]);
         APBlockId ap_blk_id = ap_netlist.create_block(first_blk_name, mol);
@@ -163,7 +132,7 @@ APNetlist read_atom_netlist(AtomContext& mutable_atom_ctx, const UserPlaceConstr
             continue;
         }
     }
-    ap_netlist.compress();
+    ap_netlist.remove_and_compress();
 
     // TODO: Some nets may go to the same block mutliple times. Should that be
     //       fixed? Maybe we want nets to be strongly attracted towards some
