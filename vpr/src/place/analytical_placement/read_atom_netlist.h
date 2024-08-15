@@ -2,8 +2,9 @@
 #pragma once
 
 class AtomContext;
+class APPrepacker;
 class UserPlaceConstraints;
 class APNetlist;
 
-APNetlist read_atom_netlist(AtomContext& mutable_atom_ctx, const UserPlaceConstraints& constraints);
+APNetlist read_atom_netlist(const AtomContext& atom_ctx, const APPrepacker& prepacker, const UserPlaceConstraints& constraints);
 
