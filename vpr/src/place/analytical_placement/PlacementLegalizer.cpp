@@ -363,6 +363,24 @@ public:
         return tile_graph.get_overfilled_tiles();
     }
 
+    // Gets all of the blocks in a given tile.
+    std::vector<APBlockId> get_all_blocks(const PlaceTileId tile_id) {
+        // FIXME: This was made quickly. Can probably be made better.
+        const PlaceTile& place_tile = tile_graph.get_place_tile(tile_id);
+        std::vector<APBlockId> all_blocks;
+        for (const PlaceSubTile& sub_tile : place_tile.sub_tiles) {
+            const auto& atoms_in_site = sub_tile.atoms_in_site;
+            for (APBlockId blk_id : atoms_in_site) {
+                all_blocks.push_back(blk_id);
+            }
+        }
+        const auto& overflow_atoms = place_tile.overflow_sub_tile.atoms_in_site;
+        for (APBlockId blk_id : overflow_atoms) {
+            all_blocks.push_back(blk_id);
+        }
+        return all_blocks;
+    }
+
     // Gets all of the moveable nodes in a given tile (regardless of if they are
     // in the overflow or not.
     std::vector<APBlockId> get_all_moveable_blocks(const PlaceTileId tile_id, const APNetlist& netlist) {
@@ -766,6 +784,31 @@ namespace {
 class APClusterer {
 public:
     APClusterer() {
+        // Initialize the clustering context.
+        // FIXME: This sucks. This is basically all copied from cluster.cpp
+        //        and all of it is internal state. Its terrible.
+        //        It also keeps on using this "HelperContext" which is super
+        //        confusing and a pain to work with.
+        //        I am not sure the affect of all of these methods, so only adding
+        //        the minimum that I need. But I will 100% be missing something.
+        const AtomContext& atom_ctx = g_vpr_ctx.atom();
+        ClusteringHelperContext& mutable_helper_ctx = g_vpr_ctx.mutable_cl_helper();
+
+        clustering_data.hill_climbing_inputs_avail = nullptr;
+        t_pack_molecule* mol_head = atom_ctx.list_of_pack_molecules.get();
+        const t_molecule_stats max_mol_stats = calc_max_molecules_stats(mol_head);
+        int unclustered_list_head_size;
+        std::unordered_map<AtomNetId, int> net_output_feeds_driving_block_input;
+        size_t num_molecules = count_molecules(mol_head);
+        mark_all_molecules_valid(mol_head);
+        alloc_and_init_clustering(max_mol_stats,
+                                  &(mutable_helper_ctx.cluster_placement_stats),
+                                  &(mutable_helper_ctx.primitives_list),
+                                  mol_head,
+                                  clustering_data,
+                                  net_output_feeds_driving_block_input,
+                                  unclustered_list_head_size,
+                                  num_molecules);
         primitive_candidate_block_types = identify_primitive_candidate_block_types();
     }
 
@@ -792,7 +835,6 @@ public:
 
         bool success = false;
         ClusterBlockId new_clb(total_clb_num);
-        t_clustering_data clustering_data;
         t_lb_router_data* router_data = nullptr;
         PartitionRegion temp_cluster_pr;
         NocGroupId temp_noc_grp_id = NocGroupId::INVALID();
@@ -830,7 +872,6 @@ public:
         VTR_ASSERT(cluster_id.is_valid() && (size_t)cluster_id < total_clb_num);
         int mol_size = get_array_size_of_molecule(mol);
         std::unordered_set<AtomBlockId>& new_clb_atoms = cluster_to_mutable_atoms(cluster_id);
-        t_clustering_data clustering_data;
         t_lb_router_data* new_router_data = nullptr;
         bool is_added = pack_mol_in_existing_cluster(mol,
                                                      mol_size,
@@ -848,6 +889,7 @@ public:
     static constexpr bool enable_pin_feasibility_filter = true;
     std::map<const t_model*, std::vector<t_logical_block_type_ptr>> primitive_candidate_block_types;
     size_t total_clb_num = 0;
+    t_clustering_data clustering_data;
 };
 
 } // namespace
@@ -865,36 +907,56 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     APClusterer ap_clusterer;
 
     // Create clusters for each tile.
+    vtr::vector_map<APBlockId, ClusterBlockId> ap_blk_to_cluster_blk;
+    vtr::vector_map<PlaceTileId, std::vector<ClusterBlockId>> clusters_in_tiles;
+    clusters_in_tiles.resize(arch_model.get_num_tiles());
     for (size_t tile_id_idx = 0; tile_id_idx < arch_model.get_num_tiles(); tile_id_idx++) {
         PlaceTileId tile_id = PlaceTileId(tile_id_idx);
-        // FIXME: Ignoring fixed blocks for now.
-        std::vector<APBlockId> blocks_in_tile = arch_model.get_all_moveable_blocks(tile_id, netlist);
+        std::vector<APBlockId> blocks_in_tile = arch_model.get_all_blocks(tile_id);
         // For each block in the cluster,
         //  1) try to insert it into a cluster already in the tile
         //  2) if that does not work, create a new cluster
-        std::vector<ClusterBlockId> clusters_in_tile;
+        // std::vector<ClusterBlockId> clusters_in_tile;
         for (APBlockId ap_blk_id : blocks_in_tile) {
             // FIXME: The netlist stores a const pointer to mol; but the re-clusterer
             // does not accept this. Need to fix one or the other.
             // For now, using const_cast cause lazy.
             t_pack_molecule* mol = const_cast<t_pack_molecule*>(netlist.block_molecule(ap_blk_id));
             bool success = false;
-            for (ClusterBlockId cluster_blk_id : clusters_in_tile) {
+            ClusterBlockId inserted_cluster_blk_id;
+            for (ClusterBlockId cluster_blk_id : clusters_in_tiles[tile_id]) {
                 success = ap_clusterer.add_mol_to_cluster(mol, cluster_blk_id);
-                if (success)
+                if (success) {
+                    inserted_cluster_blk_id = cluster_blk_id;
                     break;
+                }
             }
-            if (success)
-                break;
-            // If cannot fit into any other cluster in tile, create new cluster.
-            ClusterBlockId new_cluster_blk_id = ap_clusterer.start_new_cluster(mol);
-            clusters_in_tile.push_back(new_cluster_blk_id);
+            if (!success) {
+                // If cannot fit into any other cluster in tile, create new cluster.
+                inserted_cluster_blk_id = ap_clusterer.start_new_cluster(mol);
+                clusters_in_tiles[tile_id].push_back(inserted_cluster_blk_id);
+            }
+            ap_blk_to_cluster_blk.insert(ap_blk_id, inserted_cluster_blk_id);
         }
+        VTR_LOG("%zu clusters in tile\n", clusters_in_tiles[tile_id].size());
     }
 
+    // FIXME: The clustered netlist will need to be cleaned up I think.
+
+    // TODO: The next few steps will be basically a direct copy of the initial
+    //       placement code since it does everything we need! It would be nice
+    //       to share the code.
+    
     // Lock down fixed clusters?
 
     // Move the clusters to legal positions
+    for (size_t tile_id_idx = 0; tile_id_idx < arch_model.get_num_tiles(); tile_id_idx++) {
+        PlaceTileId tile_id = PlaceTileId(tile_id_idx);
+        // Try to place the cluster at this tile's position
+
+        // If failed to place, hold onto it and place it in the first available
+        // spot after all tiles have been placed.
+    }
 
     VTR_ASSERT(false && "Full legalizer not implemented yet.");
 }
