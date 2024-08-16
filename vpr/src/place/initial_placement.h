@@ -152,4 +152,11 @@ bool place_one_block(const ClusterBlockId blk_id,
                      std::vector<t_grid_empty_locs_block_type>* blk_types_empty_locs_in_grid,
                      vtr::vector<ClusterBlockId, t_block_score>* block_scores,
                      BlkLocRegistry& blk_loc_registry);
+
+/**
+ * @brief Initializes the grid to empty. It also initialized the location for
+ * all blocks to unplaced.
+ */
+void clear_all_grid_locs(BlkLocRegistry& blk_loc_registry);
+
 #endif
