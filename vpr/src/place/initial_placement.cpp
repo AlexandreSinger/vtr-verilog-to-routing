@@ -41,12 +41,6 @@ static constexpr int SORT_WEIGHT_PER_TILES_OUTSIDE_OF_PR = 100;
 static void clear_block_type_grid_locs(const std::unordered_set<int>& unplaced_blk_types_index);
 
 /**
- * @brief Initializes the grid to empty. It also initialized the location for
- * all blocks to unplaced.
- */
-static void clear_all_grid_locs();
-
-/**
  * @brief Control routine for placing a macro.
  * First iteration of place_marco performs the following steps to place a macro:
  *  1) try_centroid_placement : tries to find a location based on the macro's logical connections.
@@ -1098,7 +1092,7 @@ static void clear_block_type_grid_locs(const std::unordered_set<int>& unplaced_b
     }
 }
 
-static void clear_all_grid_locs() {
+void clear_all_grid_locs() {
     auto& device_ctx = g_vpr_ctx.device();
 
     std::unordered_set<int> blk_types_to_be_cleared;

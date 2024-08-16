@@ -15,8 +15,11 @@
 #include "clustered_netlist_fwd.h"
 #include "device_grid.h"
 #include "globals.h"
+#include "initial_placement.h"
 #include "logic_types.h"
 #include "physical_types.h"
+#include "place_constraints.h"
+#include "place_util.h"
 #include "re_cluster_util.h"
 #include "vpr_context.h"
 #include "vpr_types.h"
@@ -357,6 +360,10 @@ public:
 
     std::reference_wrapper<const PlaceTile> get_place_tile(PlaceTileId tile_id) const {
         return tile_graph.get_place_tile(tile_id);
+    }
+
+    PlaceTileId get_place_tile_id(int x, int y) const {
+        return tile_graph.get_place_tile_id(x, y);
     }
 
     std::reference_wrapper<const std::unordered_set<PlaceTileId>> get_overfilled_tiles() const {
@@ -941,22 +948,67 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
         VTR_LOG("%zu clusters in tile\n", clusters_in_tiles[tile_id].size());
     }
 
+    // Try to draw the clustering cause I am curious. This can be removed later.
+    size_t grid_width = g_vpr_ctx.device().grid.width();
+    size_t grid_height = g_vpr_ctx.device().grid.height();
+    for (size_t y = 0; y < grid_height; y++) {
+        for (size_t x = 0; x < grid_width; x++) {
+            if (g_vpr_ctx.device().grid.get_width_offset({(int)x, (int)y, 0}) != 0 ||
+                g_vpr_ctx.device().grid.get_height_offset({(int)x, (int)y, 0}) != 0) {
+                VTR_LOG(" ");
+                continue;
+            }
+            PlaceTileId place_tile = arch_model.get_place_tile_id(x, y);
+            VTR_LOG("%zu", clusters_in_tiles[place_tile].size());
+        }
+        VTR_LOG("\n");
+    }
+
     // FIXME: The clustered netlist will need to be cleaned up I think.
+
+    // Passed this point we are now out of clustering and into Placement.
+    // Need to allocate the necessary information required for placement.
+    //  - it would be nice to better organize this into classes
+    //      AP_CLUSTER ; AP_PLACE
+
+    // FIXME: This was stolen from place/place.cpp
+    //        it used a static method, just taking what I think I will need.
+    // FIXME: WILL LIKELY NEED MORE! DID NOT ALLOCATE PLACEMENT MACROS!
+    init_placement_context();
 
     // TODO: The next few steps will be basically a direct copy of the initial
     //       placement code since it does everything we need! It would be nice
     //       to share the code.
-    
-    // Lock down fixed clusters?
+
+    // Clear the grid locations (stolen from initial_placement)
+    // FIXME: Should I have stole this?
+    VTR_LOG("CLEARING GRID LOCS\n");
+    clear_all_grid_locs();
+
+    // Deal with the placement constraints.
+    VTR_LOG("Propogating constraints and fixed blocks\n");
+    propagate_place_constraints();
+
+    mark_fixed_blocks();
+
+    alloc_and_load_compressed_cluster_constraints();    
 
     // Move the clusters to legal positions
     for (size_t tile_id_idx = 0; tile_id_idx < arch_model.get_num_tiles(); tile_id_idx++) {
         PlaceTileId tile_id = PlaceTileId(tile_id_idx);
         // Try to place the cluster at this tile's position
+        // TODO: The is_block_placed and try_place_macro will be extremely helpful
+        //       for doing this.
 
         // If failed to place, hold onto it and place it in the first available
         // spot after all tiles have been placed.
+        // TODO: Again, try_place_macro_randomly/exhaustively may be very very
+        //       helpful here.
     }
+
+    // FIXME: Allocate and load moveable blocks?
+
+    // FIXME: Check initial placement legality?
 
     VTR_ASSERT(false && "Full legalizer not implemented yet.");
 }
