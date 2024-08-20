@@ -17,6 +17,7 @@
 #include "globals.h"
 #include "initial_placement.h"
 #include "logic_types.h"
+#include "pack.h"
 #include "physical_types.h"
 #include "place_constraints.h"
 #include "place_util.h"
@@ -788,6 +789,12 @@ void FlowBasedLegalizer::legalize(PartialPlacement &p_placement) {
 namespace {
 
 // Manages clustering the atom netlist based on the partial placement
+// NOTE: THIS DOES NOT MAINTAIN THE NETS OF THE CLUSTERED NETLIST!
+//  - This only creates the block and generates a .net file (which can then
+//    be read to create the necessary nets).
+// FIXME: A class like this should be made for the clusterer in general. That
+//        way the clusterer can implicitly maintain its own state and allow other
+//        users (like AP) to work with it.
 class APClusterer {
 public:
     APClusterer() {
@@ -817,6 +824,13 @@ public:
                                   unclustered_list_head_size,
                                   num_molecules);
         primitive_candidate_block_types = identify_primitive_candidate_block_types();
+        is_clock = alloc_and_load_is_clock();
+    }
+
+    ~APClusterer() {
+        // NOTE: THIS WILL DELETE THE CLUSTERING NETLIST!!!!
+        //       IT MUST BE RELOADED FROM THE FILE (That is expected).
+        free_clustering_data(packer_opts, clustering_data);
     }
 
     // Start a new cluster for the given molecule.
@@ -854,7 +868,7 @@ public:
                                                     feasible_block_array_size,
                                                     enable_pin_feasibility_filter,
                                                     new_clb,
-                                                    false /*during_packing*/,
+                                                    true /*during_packing*/,
                                                     10 /*verbosity*/,
                                                     clustering_data,
                                                     &router_data,
@@ -884,23 +898,48 @@ public:
                                                      mol_size,
                                                      cluster_id,
                                                      new_clb_atoms,
-                                                     false /*during_packing*/,
+                                                     true /*during_packing*/,
                                                      clustering_data,
                                                      new_router_data);
         return is_added;
     }
-    
+
+    // TODO: Need to create the nets
+    //  - The clusterer in the packer actually never creates the nets for the
+    //    clustered netlist. It just leaves them alone since it does not need
+    //    them and they are expensive to maintain.
+    //  - The clusterer in the packer relies on the read_netlist code to properly
+    //    add the nets and initialize global state.
+    //  - The re-clustering API does maintain the nets (since it has to).
+    //  - For AP, we want to follow the clusterer's example.
+    //      - However, we should eventually not rely on this.
+
+    void check_and_output_clustering() {
+        // See pack/cluster_util.cpp
+        packer_opts.output_file = "temp.net";
+        // FIXME: This needs to grab what is passed in, currently just spoofing
+        // it to get it to work.
+        packer_opts.global_clocks = true;
+        const t_arch* arch = g_vpr_ctx.device().arch;
+        ::check_and_output_clustering(packer_opts, is_clock, arch, total_clb_num, clustering_data.intra_lb_routing);
+    }
+
     // FIXME: These are passed into the clustering as clustering options.
     //        Using default values for now.
     static constexpr int feasible_block_array_size = 30;
     static constexpr bool enable_pin_feasibility_filter = true;
     std::map<const t_model*, std::vector<t_logical_block_type_ptr>> primitive_candidate_block_types;
+    std::unordered_set<AtomNetId> is_clock;
     size_t total_clb_num = 0;
+    // TODO: LOAD IN THE PACKER OPTS
+    t_packer_opts packer_opts;
     t_clustering_data clustering_data;
 };
 
 } // namespace
 
+// TODO: Move this to its own file. Its very complex and disjoint from partial
+//       legalization.
 void FullLegalizer::legalize(PartialPlacement& p_placement) {
     (void)p_placement;
     VTR_LOG("Running Full Legalizer\n");
@@ -965,6 +1004,11 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     }
 
     // FIXME: The clustered netlist will need to be cleaned up I think.
+    g_vpr_ctx.clustering().clb_nlist.print_stats();
+    ap_clusterer.check_and_output_clustering();
+
+    ap_clusterer.~APClusterer();
+    VTR_ASSERT(false && "Post-Clustering AP Placement not implemented yet.");
 
     // Passed this point we are now out of clustering and into Placement.
     // Need to allocate the necessary information required for placement.
@@ -994,8 +1038,8 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     alloc_and_load_compressed_cluster_constraints();    
 
     // Move the clusters to legal positions
-    for (size_t tile_id_idx = 0; tile_id_idx < arch_model.get_num_tiles(); tile_id_idx++) {
-        PlaceTileId tile_id = PlaceTileId(tile_id_idx);
+    // for (size_t tile_id_idx = 0; tile_id_idx < arch_model.get_num_tiles(); tile_id_idx++) {
+    //     PlaceTileId tile_id = PlaceTileId(tile_id_idx);
         // Try to place the cluster at this tile's position
         // TODO: The is_block_placed and try_place_macro will be extremely helpful
         //       for doing this.
@@ -1004,7 +1048,7 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
         // spot after all tiles have been placed.
         // TODO: Again, try_place_macro_randomly/exhaustively may be very very
         //       helpful here.
-    }
+    // }
 
     // FIXME: Allocate and load moveable blocks?
 
