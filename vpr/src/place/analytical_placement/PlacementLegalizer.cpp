@@ -34,6 +34,7 @@
 #include "vpr_context.h"
 #include "vpr_types.h"
 #include "vtr_assert.h"
+#include "vtr_error.h"
 #include "vtr_log.h"
 #include "vtr_ndmatrix.h"
 #include "vtr_strong_id.h"
@@ -1030,7 +1031,11 @@ public:
         to_loc.x = tile.x;
         to_loc.y = tile.y;
         to_loc.layer = tile.layer_num;
+        // Special case where the tile has no sub-tiles. It just cannot be placed.
+        if (tile.physical_tile_type.sub_tiles.size() == 0)
+            return false;
         // FIXME: GET THIS FROM THE PARTIAL PLACEMENT!!!! Or do this better.
+        //  - May need to try all the sub-tiles in a location.
         to_loc.sub_tile = 0;
         // FIXME: NEED TO VERIFY THAT THIS FOLLOWS THE PLACEMENT CONSTRAINTS!
         //          - CANNOT PLACE A CLUSTER IN A PLACE IT CANNOT EXIST.
@@ -1133,8 +1138,6 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     //       The APClusterer should no longer be used!
     ap_clusterer.finalize();
 
-    // VTR_ASSERT(false && "Post-Clustering AP Placement not implemented yet.");
-
     // Passed this point we are now out of clustering and into Placement.
     // Need to allocate the necessary information required for placement.
     //  - it would be nice to better organize this into classes
@@ -1143,6 +1146,7 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
 
     // Move the clusters to legal positions
     APClusterPlacer ap_cluster_placer;
+    VTR_LOG("Placing clusters...\n");
     std::vector<ClusterBlockId> unplaced_clusters;
     for (size_t tile_id_idx = 0; tile_id_idx < arch_model.get_num_tiles(); tile_id_idx++) {
         PlaceTileId tile_id = PlaceTileId(tile_id_idx);
@@ -1157,9 +1161,12 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
         }
     }
 
+    VTR_LOG("Placing unplaced clusters...\n");
     for (ClusterBlockId clb_blk_id : unplaced_clusters) {
         bool success = ap_cluster_placer.exhaustively_place_cluster(clb_blk_id);
-        VTR_ASSERT(success);
+        if (!success) {
+            throw vtr::VtrError("Unable to find valid place for cluster in AP placement!");
+        }
     }
 
     // Print some statistics about what happened here. This will be useful to
@@ -1169,9 +1176,9 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     //       types are always conflicting.
 
     // FIXME: Allocate and load moveable blocks?
+    //      - This may be needed to perform SA. Not needed right now.
 
     // FIXME: Check initial placement legality?
 
-    // VTR_ASSERT(false && "Full legalizer not implemented yet.");
 }
 
