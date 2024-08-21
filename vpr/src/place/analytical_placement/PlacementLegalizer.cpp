@@ -9,10 +9,14 @@
 #include <unordered_set>
 #include <vector>
 #include "PartialPlacement.h"
+#include "ShowSetup.h"
 #include "ap_netlist.h"
+#include "check_netlist.h"
+#include "cluster.h"
 #include "cluster_placement.h"
 #include "cluster_util.h"
 #include "clustered_netlist_fwd.h"
+#include "constant_nets.h"
 #include "device_grid.h"
 #include "globals.h"
 #include "initial_placement.h"
@@ -22,6 +26,7 @@
 #include "place_constraints.h"
 #include "place_util.h"
 #include "re_cluster_util.h"
+#include "vpr_api.h"
 #include "vpr_context.h"
 #include "vpr_types.h"
 #include "vtr_assert.h"
@@ -827,12 +832,6 @@ public:
         is_clock = alloc_and_load_is_clock();
     }
 
-    ~APClusterer() {
-        // NOTE: THIS WILL DELETE THE CLUSTERING NETLIST!!!!
-        //       IT MUST BE RELOADED FROM THE FILE (That is expected).
-        free_clustering_data(packer_opts, clustering_data);
-    }
-
     // Start a new cluster for the given molecule.
     // TODO: I wonder if the tile information can be passed in as a hint?
     ClusterBlockId start_new_cluster(t_pack_molecule* seed_molecule) {
@@ -889,6 +888,7 @@ public:
     
     // Add a molecule to the given cluster. May fail if the molecule cannot fit
     // into the cluster.
+    // FIXME: change this to add AP block to cluster
     bool add_mol_to_cluster(t_pack_molecule* mol, ClusterBlockId cluster_id) {
         VTR_ASSERT(cluster_id.is_valid() && (size_t)cluster_id < total_clb_num);
         int mol_size = get_array_size_of_molecule(mol);
@@ -904,17 +904,13 @@ public:
         return is_added;
     }
 
-    // TODO: Need to create the nets
-    //  - The clusterer in the packer actually never creates the nets for the
-    //    clustered netlist. It just leaves them alone since it does not need
-    //    them and they are expensive to maintain.
-    //  - The clusterer in the packer relies on the read_netlist code to properly
-    //    add the nets and initialize global state.
-    //  - The re-clustering API does maintain the nets (since it has to).
-    //  - For AP, we want to follow the clusterer's example.
-    //      - However, we should eventually not rely on this.
-
-    void check_and_output_clustering() {
+    // This method finalizes the clustering, outputs the clustering to a file,
+    // then regenerates the final clustered netlist and other necessary global
+    // structs.
+    // NOTE: It is undefined behaviour if this clustering object is ever used
+    //       again after this method is used.
+    // FIXME: This should be enforced somehow.
+    void finalize() {
         // See pack/cluster_util.cpp
         packer_opts.output_file = "temp.net";
         // FIXME: This needs to grab what is passed in, currently just spoofing
@@ -922,6 +918,30 @@ public:
         packer_opts.global_clocks = true;
         const t_arch* arch = g_vpr_ctx.device().arch;
         ::check_and_output_clustering(packer_opts, is_clock, arch, total_clb_num, clustering_data.intra_lb_routing);
+
+        // FIXME: The clustered netlist will need to be cleaned up I think.
+        //          - Or maybe not...
+
+        // NOTE: THIS WILL DELETE THE CLUSTERING NETLIST!!!!
+        //       IT MUST BE RELOADED FROM THE FILE (That is expected).
+        free_clustering_data(packer_opts, clustering_data);
+
+        // After the clusterering data is freed, we need to regenerate the clustered
+        // netlist. This is matching what is happening in base/vpr_api.cpp
+        // See vpr_load_packing
+        // TODO: This should be fixed in the main flow and then brought down here.
+        //       There is no reason to re-load the netlist from a file.
+        //       (The nets should be generated after performing clustering).
+        t_vpr_setup foo_setup;
+        foo_setup.FileNameOpts.NetFile = "temp.net";
+        foo_setup.constant_net_method = e_constant_net_method::CONSTANT_NET_ROUTE;
+        vpr_load_packing(foo_setup, *arch);
+        load_cluster_constraints();
+
+        // Verify the packing and print some info.
+        check_netlist(packer_opts.pack_verbosity);
+        writeClusteredNetlistStats(foo_setup.FileNameOpts.write_block_usage);
+        print_pb_type_count(g_vpr_ctx.clustering().clb_nlist);
     }
 
     // FIXME: These are passed into the clustering as clustering options.
@@ -946,6 +966,9 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
 
     // Create an achitecture model to create the graph and put the molecules in
     // their place.
+    // FIXME: Here I am just using the architecture model to quickly store the
+    //        APBlocks into the tiles in an organized way. This should eventually
+    //        be separated.
     const DeviceContext& device_ctx = g_vpr_ctx.device();
     SimpleArchModel arch_model(device_ctx);
     arch_model.import_node_locations(p_placement, netlist);
@@ -1003,11 +1026,10 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
         VTR_LOG("\n");
     }
 
-    // FIXME: The clustered netlist will need to be cleaned up I think.
-    g_vpr_ctx.clustering().clb_nlist.print_stats();
-    ap_clusterer.check_and_output_clustering();
+    // Finalize the clustering.
+    // NOTE: All previous clustering IDs will be voided after this line.
+    ap_clusterer.finalize();
 
-    ap_clusterer.~APClusterer();
     VTR_ASSERT(false && "Post-Clustering AP Placement not implemented yet.");
 
     // Passed this point we are now out of clustering and into Placement.
