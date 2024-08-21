@@ -794,9 +794,6 @@ void FlowBasedLegalizer::legalize(PartialPlacement &p_placement) {
 namespace {
 
 // Manages clustering the atom netlist based on the partial placement
-// NOTE: THIS DOES NOT MAINTAIN THE NETS OF THE CLUSTERED NETLIST!
-//  - This only creates the block and generates a .net file (which can then
-//    be read to create the necessary nets).
 // FIXME: A class like this should be made for the clusterer in general. That
 //        way the clusterer can implicitly maintain its own state and allow other
 //        users (like AP) to work with it.
@@ -946,6 +943,8 @@ public:
 
     // FIXME: These are passed into the clustering as clustering options.
     //        Using default values for now.
+    //    - VB recommends creating an AP context and passing the information
+    //      through that.
     static constexpr int feasible_block_array_size = 30;
     static constexpr bool enable_pin_feasibility_filter = true;
     std::map<const t_model*, std::vector<t_logical_block_type_ptr>> primitive_candidate_block_types;
@@ -976,6 +975,9 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     APClusterer ap_clusterer;
 
     // Create clusters for each tile.
+    // FIXME: This algorithm is very greedy and not good. It should be upgraded
+    //        with a more sophisticated alogrithm. Vaughn recommends:
+    //        https://dl.acm.org/doi/10.1145/3061639.3062279
     vtr::vector_map<APBlockId, ClusterBlockId> ap_blk_to_cluster_blk;
     vtr::vector_map<PlaceTileId, std::vector<ClusterBlockId>> clusters_in_tiles;
     clusters_in_tiles.resize(arch_model.get_num_tiles());
@@ -1028,6 +1030,7 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
 
     // Finalize the clustering.
     // NOTE: All previous clustering IDs will be voided after this line.
+    //       The APClusterer should no longer be used!
     ap_clusterer.finalize();
 
     VTR_ASSERT(false && "Post-Clustering AP Placement not implemented yet.");
