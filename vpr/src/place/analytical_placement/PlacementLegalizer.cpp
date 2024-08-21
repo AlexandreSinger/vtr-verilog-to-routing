@@ -16,14 +16,18 @@
 #include "cluster_placement.h"
 #include "cluster_util.h"
 #include "clustered_netlist_fwd.h"
+#include "compressed_grid.h"
 #include "constant_nets.h"
 #include "device_grid.h"
 #include "globals.h"
 #include "initial_placement.h"
 #include "logic_types.h"
+#include "net_cost_handler.h"
 #include "pack.h"
+#include "partition_region.h"
 #include "physical_types.h"
 #include "place_constraints.h"
+#include "place_macro.h"
 #include "place_util.h"
 #include "re_cluster_util.h"
 #include "vpr_api.h"
@@ -955,6 +959,102 @@ public:
     t_clustering_data clustering_data;
 };
 
+class APClusterPlacer {
+private:
+    // Get the macro for the given cluster block.
+    t_pl_macro get_macro(ClusterBlockId clb_blk_id) {
+        // Basically stolen from initial_placement.cpp:place_one_block
+        // TODO: Make this a cleaner interface and share the code.
+        int imacro;
+        get_imacro_from_iblk(&imacro, clb_blk_id, g_vpr_ctx.placement().pl_macros);
+        // If this block is part of a macro, return it.
+        if (imacro != -1)
+            return g_vpr_ctx.placement().pl_macros[imacro];
+        // If not, create a "fake" macro with a single element.
+        t_pl_macro_member macro_member;
+        t_pl_offset block_offset(0, 0, 0, 0);
+        macro_member.blk_index = clb_blk_id;
+        macro_member.offset = block_offset;
+        
+        t_pl_macro pl_macro;
+        pl_macro.members.push_back(macro_member);
+        return pl_macro;
+    }
+
+public:
+    APClusterPlacer() {
+        // FIXME: This was stolen from place/place.cpp
+        //        it used a static method, just taking what I think I will need.
+        // FIXME: WILL LIKELY NEED MORE! DID NOT ALLOCATE PLACEMENT MACROS!
+        init_placement_context();
+
+        // stolen from place/place.cpp:alloc_and_load_try_swap_structs
+        size_t num_nets = g_vpr_ctx.clustering().clb_nlist.nets().size();
+        // FIXME: set cube_bb to false by hand, should be passed in.
+        g_vpr_ctx.mutable_placement().cube_bb = false;
+        init_try_swap_net_cost_structs(num_nets, false /*cube_bb*/);
+        g_vpr_ctx.mutable_placement().compressed_block_grids = create_compressed_block_grids();
+
+        // Initialize the macros
+        const t_arch* arch = g_vpr_ctx.device().arch;
+        g_vpr_ctx.mutable_placement().pl_macros = alloc_and_load_placement_macros(arch->Directs, arch->num_directs);
+
+        // TODO: The next few steps will be basically a direct copy of the initial
+        //       placement code since it does everything we need! It would be nice
+        //       to share the code.
+
+        // Clear the grid locations (stolen from initial_placement)
+        // FIXME: Should I have stole this?
+        VTR_LOG("CLEARING GRID LOCS\n");
+        clear_all_grid_locs();
+
+        // Deal with the placement constraints.
+        VTR_LOG("Propogating constraints\n");
+        propagate_place_constraints();
+
+        VTR_LOG("Marking fixed blocks\n");
+        mark_fixed_blocks();
+
+        VTR_LOG("Allocating and loading compressed cluster constraints\n");
+        alloc_and_load_compressed_cluster_constraints();    
+    }
+
+    // Given a cluster and tile it wants to go into, try to place the cluster
+    // at this tile's postion.
+    bool place_cluster(ClusterBlockId clb_blk_id, const PlaceTile &tile) {
+        // TODO: The is_block_placed and try_place_macro will be extremely helpful
+        //       for doing this.
+        VTR_ASSERT(!is_block_placed(clb_blk_id) && "Block already placed. Is this intentional?");
+        t_pl_macro pl_macro = get_macro(clb_blk_id);
+        t_pl_loc to_loc;
+        to_loc.x = tile.x;
+        to_loc.y = tile.y;
+        to_loc.layer = tile.layer_num;
+        // FIXME: GET THIS FROM THE PARTIAL PLACEMENT!!!! Or do this better.
+        to_loc.sub_tile = 0;
+        // FIXME: NEED TO VERIFY THAT THIS FOLLOWS THE PLACEMENT CONSTRAINTS!
+        //          - CANNOT PLACE A CLUSTER IN A PLACE IT CANNOT EXIST.
+        return try_place_macro(pl_macro, to_loc);
+    }
+
+    // This is not the best way of doing things, but its the simplest. Given a
+    // cluster, just find somewhere for it to go.
+    // TODO: Make this like the initial placement code where we first try
+    //       centroid, then random, then exhaustive.
+    bool exhaustively_place_cluster(ClusterBlockId clb_blk_id) {
+        // TODO: Again, try_place_macro_randomly/exhaustively may be very very
+        //       helpful here.
+        VTR_ASSERT(!is_block_placed(clb_blk_id) && "Block already placed. Is this intentional?");
+        t_pl_macro pl_macro = get_macro(clb_blk_id);
+        const PartitionRegion& pr = is_cluster_constrained(clb_blk_id) ? g_vpr_ctx.floorplanning().cluster_constraints[clb_blk_id] : get_device_partition_region();
+        t_logical_block_type_ptr block_type = g_vpr_ctx.clustering().clb_nlist.block_type(clb_blk_id);
+        // FIXME: We really should get this from the place context, not the device context.
+        //      - Stealing it for now to get this to work.
+        enum e_pad_loc_type pad_loc_type = g_vpr_ctx.device().pad_loc_type;
+        return try_place_macro_exhaustively(pl_macro, pr, block_type, pad_loc_type);
+    }
+};
+
 } // namespace
 
 // TODO: Move this to its own file. Its very complex and disjoint from partial
@@ -1033,52 +1133,45 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     //       The APClusterer should no longer be used!
     ap_clusterer.finalize();
 
-    VTR_ASSERT(false && "Post-Clustering AP Placement not implemented yet.");
+    // VTR_ASSERT(false && "Post-Clustering AP Placement not implemented yet.");
 
     // Passed this point we are now out of clustering and into Placement.
     // Need to allocate the necessary information required for placement.
     //  - it would be nice to better organize this into classes
     //      AP_CLUSTER ; AP_PLACE
 
-    // FIXME: This was stolen from place/place.cpp
-    //        it used a static method, just taking what I think I will need.
-    // FIXME: WILL LIKELY NEED MORE! DID NOT ALLOCATE PLACEMENT MACROS!
-    init_placement_context();
-
-    // TODO: The next few steps will be basically a direct copy of the initial
-    //       placement code since it does everything we need! It would be nice
-    //       to share the code.
-
-    // Clear the grid locations (stolen from initial_placement)
-    // FIXME: Should I have stole this?
-    VTR_LOG("CLEARING GRID LOCS\n");
-    clear_all_grid_locs();
-
-    // Deal with the placement constraints.
-    VTR_LOG("Propogating constraints and fixed blocks\n");
-    propagate_place_constraints();
-
-    mark_fixed_blocks();
-
-    alloc_and_load_compressed_cluster_constraints();    
 
     // Move the clusters to legal positions
-    // for (size_t tile_id_idx = 0; tile_id_idx < arch_model.get_num_tiles(); tile_id_idx++) {
-    //     PlaceTileId tile_id = PlaceTileId(tile_id_idx);
-        // Try to place the cluster at this tile's position
-        // TODO: The is_block_placed and try_place_macro will be extremely helpful
-        //       for doing this.
+    APClusterPlacer ap_cluster_placer;
+    std::vector<ClusterBlockId> unplaced_clusters;
+    for (size_t tile_id_idx = 0; tile_id_idx < arch_model.get_num_tiles(); tile_id_idx++) {
+        PlaceTileId tile_id = PlaceTileId(tile_id_idx);
+        const PlaceTile& tile = arch_model.get_place_tile(tile_id);
+        for (ClusterBlockId clb_blk_id : clusters_in_tiles[tile_id]) {
+            // Try to place the cluster at this tile's position
+            bool placed = ap_cluster_placer.place_cluster(clb_blk_id, tile);
+            // If failed to place, hold onto it and place it in the first available
+            // spot after all tiles have been placed.
+            if (!placed)
+                unplaced_clusters.push_back(clb_blk_id);
+        }
+    }
 
-        // If failed to place, hold onto it and place it in the first available
-        // spot after all tiles have been placed.
-        // TODO: Again, try_place_macro_randomly/exhaustively may be very very
-        //       helpful here.
-    // }
+    for (ClusterBlockId clb_blk_id : unplaced_clusters) {
+        bool success = ap_cluster_placer.exhaustively_place_cluster(clb_blk_id);
+        VTR_ASSERT(success);
+    }
+
+    // Print some statistics about what happened here. This will be useful to
+    // improve other algorithms.
+    VTR_LOG("Number of clusters which needed to be moved: %zu\n", unplaced_clusters.size());
+    // TODO: Print a breakdown per block type. We may find that specific block
+    //       types are always conflicting.
 
     // FIXME: Allocate and load moveable blocks?
 
     // FIXME: Check initial placement legality?
 
-    VTR_ASSERT(false && "Full legalizer not implemented yet.");
+    // VTR_ASSERT(false && "Full legalizer not implemented yet.");
 }
 
