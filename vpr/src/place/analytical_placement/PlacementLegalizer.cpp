@@ -1023,8 +1023,8 @@ public:
     // Given a cluster and tile it wants to go into, try to place the cluster
     // at this tile's postion.
     bool place_cluster(ClusterBlockId clb_blk_id, const PlaceTile &tile) {
-        // TODO: The is_block_placed and try_place_macro will be extremely helpful
-        //       for doing this.
+        // FIXME: THIS MUST TAKE INTO ACCOUNT THE CONSTRAINTS AS WELL!!!
+        //  - Right now it is just implied.
         VTR_ASSERT(!is_block_placed(clb_blk_id) && "Block already placed. Is this intentional?");
         t_pl_macro pl_macro = get_macro(clb_blk_id);
         t_pl_loc to_loc;
@@ -1036,6 +1036,7 @@ public:
             return false;
         // FIXME: GET THIS FROM THE PARTIAL PLACEMENT!!!! Or do this better.
         //  - May need to try all the sub-tiles in a location.
+        //  - https://github.com/AlexandreSinger/vtr-verilog-to-routing/blob/feature-analytical-placer/vpr/src/place/initial_placement.cpp#L755
         to_loc.sub_tile = 0;
         // FIXME: NEED TO VERIFY THAT THIS FOLLOWS THE PLACEMENT CONSTRAINTS!
         //          - CANNOT PLACE A CLUSTER IN A PLACE IT CANNOT EXIST.
