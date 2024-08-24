@@ -7,11 +7,14 @@
 #include "ap_utils.h"
 #include "AnalyticalSolver.h"
 #include "PlacementLegalizer.h"
+#include "atom_netlist_fwd.h"
 #include "globals.h"
+#include "physical_types.h"
 #include "read_atom_netlist.h"
 #include "user_place_constraints.h"
 #include "vpr_context.h"
 #include "vtr_assert.h"
+#include "vtr_log.h"
 #include "vtr_time.h"
 
 void run_analytical_placement_flow() {

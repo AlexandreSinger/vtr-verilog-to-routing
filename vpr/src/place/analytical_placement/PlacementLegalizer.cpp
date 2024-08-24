@@ -6,10 +6,13 @@
 #include <limits>
 #include <queue>
 #include <stack>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "PartialPlacement.h"
 #include "ap_netlist.h"
+#include "ap_netlist_fwd.h"
+#include "atom_netlist_fwd.h"
 #include "device_grid.h"
 #include "globals.h"
 #include "physical_types.h"
@@ -27,10 +30,16 @@ namespace {
 struct place_tile_id_tag {};
 typedef vtr::StrongId<place_tile_id_tag, size_t> PlaceTileId;
 
+
 // Struct to contain sub-tile information
 struct PlaceSubTile {
     // Atoms currently placed in this sub_tile
     // FIXME: Change this variable name.
+    // This is not considering mode.
+    // Also, this is assuming that the primitive nodes are unique. There is only one path to 
+    //  a primitive node. If not, we need to hash the path and include the primitive node in the value.
+    //  By observing the current assertions, this is true
+    std::unordered_map<t_pb_type*, int> type_capacity;
     std::unordered_set<APBlockId> atoms_in_site;
 };
 
@@ -138,10 +147,22 @@ class PlaceTileGraph {
     std::unordered_set<PlaceTileId> overfilled_tile_ids;
 public:
     PlaceTileGraph() = delete;
+    void count_primitive_type(t_pb_type* root_type, int repeat, std::unordered_map<t_pb_type*, int>& type_capacity) {
+        if (root_type->num_modes == 0 && root_type->model != nullptr) {
+            auto result = type_capacity.insert({root_type, repeat * root_type->num_pb});
+            VTR_ASSERT(result.second && "more than one path to a primitive type!");
+        }
+        for (int i = 0; i < root_type->num_modes; i++){
+            for(int j = 0; j < root_type->modes[i].num_pb_type_children; j++){
+                count_primitive_type(&(root_type->modes[i].pb_type_children[j]), repeat * root_type->num_pb, type_capacity);
+            } 
+        }
+    }
     PlaceTileGraph(const DeviceContext& device) : tile_grid({device.grid.width(), device.grid.height()}) {
         // Construct each of the tiles.
         size_t grid_width = device.grid.width();
         size_t grid_height = device.grid.height();
+        std::set<t_pb_type*> unique_pb_type_pointer;
         for (size_t x = 0; x < grid_width; x++) {
             for (size_t y = 0; y < grid_height; y++) {
                 // Ignoring 3D placement for now. Will likely require modification to
@@ -159,10 +180,22 @@ public:
                 // Create the PlaceTile and insert into tiles array.
                 t_physical_tile_type_ptr physical_type = device.grid.get_physical_type(tile_loc);
                 size_t tile_index = tiles.size();
-                const PlaceTile& place_tile = tiles.emplace_back(tile_loc.x, tile_loc.y, tile_loc.layer_num, tile_index, *physical_type);
+                PlaceTile& place_tile = tiles.emplace_back(tile_loc.x, tile_loc.y, tile_loc.layer_num, tile_index, *physical_type);
+                for (t_sub_tile subtile : place_tile.physical_tile_type.sub_tiles) {
+                    for(const t_logical_block_type* site : subtile.equivalent_sites){
+                        std::unordered_map<t_pb_type*, int> type_capacity;
+                        t_pb_type* type = site->pb_type;
+                        unique_pb_type_pointer.insert(type);
+                        count_primitive_type(type, 1, type_capacity);
+                        for (int subtile_index = subtile.capacity.low; subtile_index <= subtile.capacity.high; subtile_index++) {
+                            place_tile.sub_tiles[subtile_index].type_capacity = type_capacity;
+                        }
+                    }
+                }
                 tile_grid[x][y] = place_tile.tile_index;
             }
         }
+
         // Connect the tiles through neighbors.
         for (size_t x = 0; x < grid_width; x++) {
             for (size_t y = 0; y < grid_height; y++) {
@@ -312,35 +345,79 @@ class SimpleArchModel {
     // with the old algorithm. This should be a dynamic value calculated per
     // tile.
     // FIXME:
-    static constexpr size_t BIN_CAPACITY = 8;
+    // static constexpr size_t BIN_CAPACITY = 8;
+    const std::unordered_map<const t_model*, size_t> demand_vector_index;
+    const vtr::vector<APBlockId, std::vector<int>> demand_vector; 
 
     // Helper function to return the amount of "valid" space in the tile.
     // In other words how many more atoms can fit in this tile legally.
-    size_t get_space_in_tile(PlaceTileId tile_id) const {
+    std::vector<int> get_space_in_tile(PlaceTileId tile_id) const {
+        std::vector<int> tile_space(demand_vector_index.size(), 0);
         const PlaceTile& place_tile = tile_graph.get_place_tile(tile_id);
         // If there are no sub_tiles, then there is no space in the tile.
         if (place_tile.sub_tiles.size() == 0)
-            return 0;
-        // If there are sub_tiles, the simple model only puts things in the
-        // first sub_tile.
-        size_t num_atoms_in_st = place_tile.sub_tiles[0].atoms_in_site.size();
-        // TODO: Make this assert debug.
-        VTR_ASSERT(num_atoms_in_st <= BIN_CAPACITY);
-        return BIN_CAPACITY - num_atoms_in_st;
+            return tile_space;
+        
+        // FIXME: This sums up capacity across all subtiles, however, can two atoms in
+        //  a molecue be placed in different subtiles?
+        //  FIXME: this is constant and can be stored some where.
+        for (PlaceSubTile subtile : place_tile.sub_tiles){
+            std::vector<std::vector<int>> model_repeat_average(demand_vector_index.size());
+            for(auto p : subtile.type_capacity) {
+                const t_model* model = p.first->model;
+                // We do not care about model that exists in tiles but were never used by any blocks
+                // VTR_ASSERT(demand_vector_index.find(model) != demand_vector_index.end());
+                if(demand_vector_index.find(model) != demand_vector_index.end())
+                    model_repeat_average[demand_vector_index.at(model)].push_back(p.second);
+            }
+            for(size_t i = 0; i < tile_space.size(); i++) {
+                int sum = 0;
+                for (int val : model_repeat_average[i]){
+                    sum += val;
+                }
+                int average = sum / model_repeat_average[i].size();
+                tile_space[i] += average;  
+            }
+        }
+        for (PlaceSubTile subtile : place_tile.sub_tiles){
+            for(APBlockId block : subtile.atoms_in_site) {
+                for(size_t i = 0; i < demand_vector_index.size(); i++) {
+                    tile_space[i] -= demand_vector[block][i];
+                }          
+            }
+        }
+        for(size_t i = 0; i < demand_vector_index.size(); i++) {
+            VTR_ASSERT(tile_space[i] >= 0);
+        }
+        return tile_space;
     }
 
     // Helper method to add an atom to a given tile.
     // NOTE: This was made private since removing / adding an atom from/to the
     //       tile graph does not make sense during operation of the legalizer.
     void add_atom_to_tile(APBlockId blk_id, PlaceTileId tile_id) {
-        if (get_space_in_tile(tile_id) > 0)
+        std::vector<int> space_vailable = get_space_in_tile(tile_id);
+        bool isEveryElementGE = true;
+        for (size_t i = 0; i < space_vailable.size(); i++) {
+            if (space_vailable[i] < demand_vector[blk_id][i]) {
+                isEveryElementGE = false;
+                break;
+            }
+        }
+        // FIXME: hardcoded subtile zero
+        if (isEveryElementGE)
             tile_graph.add_atom_to_sub_tile(blk_id, tile_id, 0);
         else
             tile_graph.add_atom_to_overflow(blk_id, tile_id);
     }
 
 public:
-    SimpleArchModel(const DeviceContext& device_ctx) : tile_graph(device_ctx) {}
+    SimpleArchModel(const DeviceContext& device_ctx, 
+                    const std::unordered_map<const t_model*, size_t>& _demand_vector_index,
+                    const vtr::vector<APBlockId, std::vector<int>>& _demand_vector) : 
+                        tile_graph(device_ctx),
+                        demand_vector_index(_demand_vector_index),
+                        demand_vector(_demand_vector) {}
 
     // Getter methods to get information on the tile graph.
     // FIXME: If the ArchModel inherited from the tile graph it could have
@@ -394,7 +471,15 @@ public:
         PlaceTileId source_tile_id = tile_graph.get_containing_tile(blk_id);
         size_t old_sub_tile_idx = tile_graph.get_containing_sub_tile_idx(blk_id);
         // Move the atom
-        if (get_space_in_tile(target_tile_id) > 0)
+        std::vector<int> space_vailable = get_space_in_tile(target_tile_id);
+        bool isEveryElementGE = true;
+        for (size_t i = 0; i < space_vailable.size(); i++) {
+            if (space_vailable[i] < demand_vector[blk_id][i]) {
+                isEveryElementGE = false;
+                break;
+            }
+        }
+        if (isEveryElementGE)
             tile_graph.move_atom_to_sub_tile(blk_id, target_tile_id, 0);
         else
             tile_graph.move_atom_to_overflow(blk_id, target_tile_id);
@@ -434,7 +519,12 @@ public:
         if (!place_tile.overflow_sub_tile.atoms_in_site.empty())
             return 0.f;
         // Else return the amount of space left in the sub-tile
-        return get_space_in_tile(tile_id);
+        std::vector<int> space_available = get_space_in_tile(tile_id);
+        int sum = 0;
+        for (int val : space_available) {
+            sum += val;
+        }
+        return sum;
     }
 
     // Import the atom locations from the partial placement into the tile graph.
@@ -691,12 +781,35 @@ static inline void moveCells(const PartialPlacement& p_placement,
 //        block. Needs to be updated to handle heterogenous blocks.
 void FlowBasedLegalizer::legalize(PartialPlacement &p_placement) {
     VTR_LOG("Running Flow-Based Legalizer\n");
-
+    // FIXME: the following can be one for loop. 
+    const AtomContext& atom_ctx = g_vpr_ctx.atom();
+    if (demand_vector_index.size() == 0) {
+        size_t last_model_index = 0;
+        for (APBlockId blk_id : netlist.blocks()) {
+            for (AtomBlockId atom : netlist.block_molecule(blk_id)->atom_block_ids) {
+                const t_model* model = atom_ctx.nlist.block_model(atom);
+                if (demand_vector_index.find(model) != demand_vector_index.end()) {
+                    continue;
+                }else{
+                    demand_vector_index[model] = last_model_index;
+                    last_model_index++;         
+                }
+            }
+        }
+        demand_vector.resize(netlist.blocks().size());
+        for (APBlockId blk_id : netlist.blocks()) {
+            demand_vector[blk_id].resize(demand_vector_index.size(), 0);
+            for (AtomBlockId atom : netlist.block_molecule(blk_id)->atom_block_ids) {
+                const t_model* model = atom_ctx.nlist.block_model(atom);
+                demand_vector[blk_id][demand_vector_index[model]]++;
+            }
+        }
+    }
     // Build the architecture model and the tile graph
     // FIXME: This should be moved within the leglalizer itself and reset after
     //        each iteration.
     const DeviceContext& device_ctx = g_vpr_ctx.device();
-    SimpleArchModel arch_model(device_ctx);
+    SimpleArchModel arch_model(device_ctx, demand_vector_index, demand_vector);
 
     // Import the node locations into the Tile Graph according to the architecture
     // model.
