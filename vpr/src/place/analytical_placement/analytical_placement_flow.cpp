@@ -3,11 +3,12 @@
 #include <memory>
 #include "PartialPlacement.h"
 #include "ap_netlist.h"
-#include "ap_prepacker.h"
 #include "ap_utils.h"
 #include "AnalyticalSolver.h"
 #include "PlacementLegalizer.h"
+#include "atom_netlist.h"
 #include "globals.h"
+#include "prepack.h"
 #include "read_atom_netlist.h"
 #include "user_place_constraints.h"
 #include "vpr_context.h"
@@ -19,11 +20,13 @@ void run_analytical_placement_flow() {
 
     // The global state used/modified by this flow.
     AtomContext& mutable_atom_ctx = g_vpr_ctx.mutable_atom();
+    const AtomNetlist& atom_nlist = g_vpr_ctx.atom().nlist;
     const DeviceContext& device_ctx = g_vpr_ctx.device();
     const UserPlaceConstraints& constraints = g_vpr_ctx.floorplanning().constraints;
 
     // Run the prepacker
-    APPrepacker prepacker(mutable_atom_ctx);
+    Prepacker prepacker;
+    prepacker.init(atom_nlist, device_ctx.logical_block_types);
 
     // Create the ap netlist from the atom netlist using the result from the
     // prepacker.

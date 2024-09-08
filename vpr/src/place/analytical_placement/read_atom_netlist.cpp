@@ -1,12 +1,12 @@
 
 #include "read_atom_netlist.h"
 #include "ap_netlist.h"
-#include "ap_prepacker.h"
 #include "atom_netlist.h"
 #include "atom_netlist_fwd.h"
 #include "netlist_fwd.h"
 #include "partition.h"
 #include "partition_region.h"
+#include "prepack.h"
 #include "vpr_context.h"
 #include "vpr_types.h"
 #include "vtr_assert.h"
@@ -15,7 +15,7 @@
 #include <unordered_set>
 #include <vector>
 
-APNetlist read_atom_netlist(const AtomContext& atom_ctx, const APPrepacker& prepacker, const UserPlaceConstraints& constraints) {
+APNetlist read_atom_netlist(const AtomContext& atom_ctx, const Prepacker& prepacker, const UserPlaceConstraints& constraints) {
     vtr::ScopedStartFinishTimer timer("Read Atom Netlist to AP Netlist");
 
     // FIXME: What to do about the name and ID in this context? For now just
@@ -30,7 +30,7 @@ APNetlist read_atom_netlist(const AtomContext& atom_ctx, const APPrepacker& prep
     const AtomNetlist& atom_netlist = atom_ctx.nlist;
     for (AtomBlockId atom_blk_id : atom_netlist.blocks()) {
         // Get the molecule of this block
-        t_pack_molecule* mol = prepacker.get_atom_molecule(atom_blk_id, atom_ctx);
+        t_pack_molecule* mol = prepacker.get_atom_molecule(atom_blk_id);
         // Create the AP block (if not already done)
         const std::string& first_blk_name = atom_netlist.block_name(mol->atom_block_ids[0]);
         APBlockId ap_blk_id = ap_netlist.create_block(first_blk_name, mol);
