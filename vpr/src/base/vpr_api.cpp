@@ -406,7 +406,7 @@ bool vpr_flow(t_vpr_setup& vpr_setup, t_arch& arch) {
     { //Analytical Place
         if (vpr_setup.PlacerOpts.doAnalyticalPlacement == STAGE_DO) {
             // TODO: Make this return a bool if the placement was successful or not.
-            run_analytical_placement_flow();
+            run_analytical_placement_flow(vpr_setup);
         }
     }
 

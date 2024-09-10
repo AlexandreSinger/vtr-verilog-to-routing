@@ -6,6 +6,7 @@
 #include <limits>
 #include <queue>
 #include <stack>
+#include <tuple>
 #include <unordered_set>
 #include <vector>
 #include "PartialPlacement.h"
@@ -13,6 +14,7 @@
 #include "ap_netlist.h"
 #include "check_netlist.h"
 #include "cluster.h"
+#include "cluster_legalizer.h"
 #include "cluster_placement.h"
 #include "cluster_util.h"
 #include "clustered_netlist_fwd.h"
@@ -29,7 +31,6 @@
 #include "place_constraints.h"
 #include "place_macro.h"
 #include "place_util.h"
-#include "re_cluster_util.h"
 #include "vpr_api.h"
 #include "vpr_context.h"
 #include "vpr_types.h"
@@ -796,6 +797,7 @@ void FlowBasedLegalizer::legalize(PartialPlacement &p_placement) {
     arch_model.export_node_locations(p_placement, netlist);
 }
 
+/*
 namespace {
 
 // Manages clustering the atom netlist based on the partial placement
@@ -804,39 +806,28 @@ namespace {
 //        users (like AP) to work with it.
 class APClusterer {
 public:
-    APClusterer() {
+    APClusterer(const AtomNetlist& atom_netlist,
+                const Prepacker& prepacker,
+                const std::vector<t_logical_block_type>& logical_block_types,
+                std::vector<t_lb_type_rr_node>* lb_type_rr_graphs,
+                size_t num_models,
+                const std::vector<std::string>& target_external_pin_util_str,
+                const t_pack_high_fanout_thresholds& high_fanout_thresholds,
+                ClusterLegalizationStrategy cluster_legalization_strategy,
+                bool enable_pin_feasibility_filter,
+                int log_verbosity) : legalizer(atom_netlist, prepacker, logical_block_types,
+                                               lb_type_rr_graphs, num_models, target_external_pin_util_str,
+                                               high_fanout_thresholds, cluster_legalization_strategy,
+                                               enable_pin_feasibility_filter, feasible_block_array_size,
+                                               log_verbosity) {
         // Initialize the clustering context.
-        // FIXME: This sucks. This is basically all copied from cluster.cpp
-        //        and all of it is internal state. Its terrible.
-        //        It also keeps on using this "HelperContext" which is super
-        //        confusing and a pain to work with.
-        //        I am not sure the affect of all of these methods, so only adding
-        //        the minimum that I need. But I will 100% be missing something.
-        const AtomContext& atom_ctx = g_vpr_ctx.atom();
-        ClusteringHelperContext& mutable_helper_ctx = g_vpr_ctx.mutable_cl_helper();
-
-        clustering_data.hill_climbing_inputs_avail = nullptr;
-        t_pack_molecule* mol_head = atom_ctx.list_of_pack_molecules.get();
-        const t_molecule_stats max_mol_stats = calc_max_molecules_stats(mol_head);
-        int unclustered_list_head_size;
-        std::unordered_map<AtomNetId, int> net_output_feeds_driving_block_input;
-        size_t num_molecules = count_molecules(mol_head);
-        mark_all_molecules_valid(mol_head);
-        alloc_and_init_clustering(max_mol_stats,
-                                  &(mutable_helper_ctx.cluster_placement_stats),
-                                  &(mutable_helper_ctx.primitives_list),
-                                  mol_head,
-                                  clustering_data,
-                                  net_output_feeds_driving_block_input,
-                                  unclustered_list_head_size,
-                                  num_molecules);
         primitive_candidate_block_types = identify_primitive_candidate_block_types();
         is_clock = alloc_and_load_is_clock();
     }
 
     // Start a new cluster for the given molecule.
     // TODO: I wonder if the tile information can be passed in as a hint?
-    ClusterBlockId start_new_cluster(t_pack_molecule* seed_molecule) {
+    LegalizationClusterId start_new_cluster(t_pack_molecule* seed_molecule) {
         const AtomContext& atom_ctx = g_vpr_ctx.atom();
         // /pack/cluster_util.cpp:start_new_cluster
         //
@@ -856,25 +847,13 @@ public:
         const std::vector<t_logical_block_type_ptr>& candidate_types = itr->second;
 
         bool success = false;
-        ClusterBlockId new_clb(total_clb_num);
-        t_lb_router_data* router_data = nullptr;
-        PartitionRegion temp_cluster_pr;
-        NocGroupId temp_noc_grp_id = NocGroupId::INVALID();
+        LegalizationClusterId new_cluster_id;
         for (t_logical_block_type_ptr type : candidate_types) {
             int num_modes = type->pb_graph_head->pb_type->num_modes;
             for (int mode = 0; mode < num_modes; mode++) {
-                success = start_new_cluster_for_mol(seed_molecule,
-                                                    type,
-                                                    mode,
-                                                    feasible_block_array_size,
-                                                    enable_pin_feasibility_filter,
-                                                    new_clb,
-                                                    true /*during_packing*/,
-                                                    10 /*verbosity*/,
-                                                    clustering_data,
-                                                    &router_data,
-                                                    temp_cluster_pr,
-                                                    temp_noc_grp_id);
+                e_block_pack_status pack_result = e_block_pack_status::BLK_STATUS_UNDEFINED;
+                std::tie(pack_result, new_cluster_id) = legalizer.start_new_cluster(seed_molecule, type, mode);
+                success = (pack_result == e_block_pack_status::BLK_PASSED);
                 if (success)
                     break;
             }
@@ -885,25 +864,15 @@ public:
         VTR_ASSERT(success);
         total_clb_num++;
 
-        return new_clb;
+        return new_cluster_id;
     }
     
     // Add a molecule to the given cluster. May fail if the molecule cannot fit
     // into the cluster.
     // FIXME: change this to add AP block to cluster
-    bool add_mol_to_cluster(t_pack_molecule* mol, ClusterBlockId cluster_id) {
-        VTR_ASSERT(cluster_id.is_valid() && (size_t)cluster_id < total_clb_num);
-        int mol_size = get_array_size_of_molecule(mol);
-        std::unordered_set<AtomBlockId>& new_clb_atoms = cluster_to_mutable_atoms(cluster_id);
-        t_lb_router_data* new_router_data = nullptr;
-        bool is_added = pack_mol_in_existing_cluster(mol,
-                                                     mol_size,
-                                                     cluster_id,
-                                                     new_clb_atoms,
-                                                     true /*during_packing*/,
-                                                     clustering_data,
-                                                     new_router_data);
-        return is_added;
+    bool add_mol_to_cluster(t_pack_molecule* mol, LegalizationClusterId cluster_id) {
+        e_block_pack_status status = legalizer.add_mol_to_cluster(mol, cluster_id);
+        return status == e_block_pack_status::BLK_PASSED;
     }
 
     // This method finalizes the clustering, outputs the clustering to a file,
@@ -946,12 +915,13 @@ public:
         print_pb_type_count(g_vpr_ctx.clustering().clb_nlist);
     }
 
+    ClusterLegalizer legalizer;
+
     // FIXME: These are passed into the clustering as clustering options.
     //        Using default values for now.
     //    - VB recommends creating an AP context and passing the information
     //      through that.
     static constexpr int feasible_block_array_size = 30;
-    static constexpr bool enable_pin_feasibility_filter = true;
     std::map<const t_model*, std::vector<t_logical_block_type_ptr>> primitive_candidate_block_types;
     std::unordered_set<AtomNetId> is_clock;
     size_t total_clb_num = 0;
@@ -993,7 +963,7 @@ public:
         size_t num_nets = g_vpr_ctx.clustering().clb_nlist.nets().size();
         // FIXME: set cube_bb to false by hand, should be passed in.
         g_vpr_ctx.mutable_placement().cube_bb = false;
-        init_try_swap_net_cost_structs(num_nets, false /*cube_bb*/);
+        init_try_swap_net_cost_structs(num_nets, false); // cube_bb
         g_vpr_ctx.mutable_placement().compressed_block_grids = create_compressed_block_grids();
 
         // Initialize the macros
@@ -1067,6 +1037,7 @@ public:
 //       legalization.
 void FullLegalizer::legalize(PartialPlacement& p_placement) {
     (void)p_placement;
+    const AtomNetlist& atom_nlist = g_vpr_ctx.atom().nlist;
     VTR_LOG("Running Full Legalizer\n");
 
     // Create an achitecture model to create the graph and put the molecules in
@@ -1182,4 +1153,5 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     // FIXME: Check initial placement legality?
 
 }
+*/
 

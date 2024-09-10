@@ -7,15 +7,17 @@
 #include "AnalyticalSolver.h"
 #include "PlacementLegalizer.h"
 #include "atom_netlist.h"
+#include "full_legalizer.h"
 #include "globals.h"
 #include "prepack.h"
 #include "read_atom_netlist.h"
 #include "user_place_constraints.h"
 #include "vpr_context.h"
+#include "vpr_types.h"
 #include "vtr_assert.h"
 #include "vtr_time.h"
 
-void run_analytical_placement_flow() {
+void run_analytical_placement_flow(t_vpr_setup& vpr_setup) {
     vtr::ScopedStartFinishTimer timer("Analytical Placement Flow");
 
     // The global state used/modified by this flow.
@@ -62,6 +64,18 @@ void run_analytical_placement_flow() {
     export_to_flat_placement_file(p_placement, ap_netlist, mutable_atom_ctx.nlist, "flat_placement_file.txt");
 
     // Run the full legalizer
-    FullLegalizer(ap_netlist).legalize(p_placement);
+    // FullLegalizer(ap_netlist).legalize(p_placement);
+    FullLegalizer full_legalizer(ap_netlist,
+                                 vpr_setup,
+                                 g_vpr_ctx.device().grid,
+                                 g_vpr_ctx.device().arch,
+                                 g_vpr_ctx.atom().nlist,
+                                 prepacker,
+                                 g_vpr_ctx.device().logical_block_types,
+                                 vpr_setup.PackerRRGraph,
+                                 g_vpr_ctx.device().arch->models,
+                                 g_vpr_ctx.device().arch->model_library,
+                                 vpr_setup.PackerOpts);
+    full_legalizer.legalize(p_placement);
 }
 

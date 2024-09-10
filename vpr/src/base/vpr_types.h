@@ -445,6 +445,8 @@ class t_cluster_placement_stats {
     // Each cluster_placement_primitive is associated with and index (key of the map) for easier lookup, insertion and deletion.
     std::vector<std::unordered_map<int, t_cluster_placement_primitive*>> valid_primitives;
 
+    std::unordered_map<const t_pb_graph_node*, t_cluster_placement_primitive*> pb_graph_node_primitive_to_placement_primitive;
+
   public:
     // Moves primitives that are inflight to the tried map
     void move_inflight_to_tried();

@@ -25,9 +25,11 @@ public:
     void legalize(PartialPlacement &p_placement) final;
 };
 
+/*
 class FullLegalizer : public PlacementLegalizer {
     using PlacementLegalizer::PlacementLegalizer;
 public:
     void legalize(PartialPlacement &p_placement) final;
 };
+*/
 

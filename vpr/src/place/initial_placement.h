@@ -8,6 +8,8 @@
 #include "vpr_types.h"
 #include "vtr_vector_map.h"
 
+class BlkLocRegistry;
+
 /* The maximum number of tries when trying to place a macro at a    *
  * random location before trying exhaustive placement - find the first     *
  * legal position and place it during initial placement.                  */
