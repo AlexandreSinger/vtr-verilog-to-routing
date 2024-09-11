@@ -1,6 +1,7 @@
 
 #include "full_legalizer.h"
 #include <cmath>
+#include <list>
 #include <unordered_set>
 #include <vector>
 #include "PartialPlacement.h"
@@ -201,7 +202,6 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     
     // FIXME: The legalization strategy is currently set to full. Should handle
     //        this better to make it faster.
-    {
     size_t num_models = count_models(user_models_) + count_models(library_models_);
     t_pack_high_fanout_thresholds high_fanout_thresholds(packer_opts_.high_fanout_threshold);
     ClusterLegalizer cluster_legalizer(atom_netlist_,
@@ -249,48 +249,57 @@ void FullLegalizer::legalize(PartialPlacement& p_placement) {
     }
     //  Create the legalized clusters per tile.
     std::map<const t_model*, std::vector<t_logical_block_type_ptr>> primitive_candidate_block_types = identify_primitive_candidate_block_types();
-    vtr::vector<DeviceTileId, std::vector<LegalizationClusterId>> clusters_in_tiles(num_device_tiles);
+
     for (size_t tile_id_idx = 0; tile_id_idx < num_device_tiles; tile_id_idx++) {
         DeviceTileId tile_id = DeviceTileId(tile_id_idx);
-        // For each block in the cluster,
-        //  1) try to insert it into a cluster already in the tile
-        //  2) if that does not work, create a new cluster
+        // Create the molecule list
+        std::list<t_pack_molecule*> mol_list;
         for (APBlockId ap_blk_id : blocks_in_tiles[tile_id]) {
             // FIXME: The netlist stores a const pointer to mol; but the cluster
             //        legalizer does not accept this. Need to fix one or the other.
             // For now, using const_cast cause lazy.
             t_pack_molecule* mol = const_cast<t_pack_molecule*>(ap_netlist_.block_molecule(ap_blk_id));
-            LegalizationClusterId inserted_cluster_id;
-            for (LegalizationClusterId cluster_id : clusters_in_tiles[tile_id]) {
+            mol_list.push_back(mol);
+        }
+        // Clustering algorithm: Create clusters one at a time.
+        while (!mol_list.empty()) {
+            // Arbitrarily choose the first molecule as a seed molecule.
+            t_pack_molecule* seed_mol = mol_list.front();
+            mol_list.pop_front();
+            // Use the seed molecule to create a cluster for this tile.
+            LegalizationClusterId new_cluster_id = create_new_cluster(seed_mol, cluster_legalizer, primitive_candidate_block_types);
+            // Insert all molecules that you can into the cluster.
+            // NOTE: If the mol_list was somehow sorted, we can just stop at
+            //       first failure!
+            auto it = mol_list.begin();
+            while (it != mol_list.end()) {
+                t_pack_molecule* mol = *it;
                 // FIXME: IS THIS NEEDED?
-                if (!check_free_primitives_for_molecule_atoms(mol, cluster_legalizer.get_cluster_placement_stats(cluster_id), cluster_legalizer))
+                if (!check_free_primitives_for_molecule_atoms(mol, cluster_legalizer.get_cluster_placement_stats(new_cluster_id), cluster_legalizer)) {
+                    ++it;
                     continue;
-                e_block_pack_status pack_status = cluster_legalizer.add_mol_to_cluster(mol, cluster_id);
+                }
+                // Try to insert it. If successful, remove from list.
+                e_block_pack_status pack_status = cluster_legalizer.add_mol_to_cluster(mol, new_cluster_id);
                 if (pack_status == e_block_pack_status::BLK_PASSED) {
-                    inserted_cluster_id = cluster_id;
-                    break;
+                    it = mol_list.erase(it);
+                } else {
+                    ++it;
                 }
             }
-            if (!inserted_cluster_id.is_valid()) {
-                inserted_cluster_id = create_new_cluster(mol, cluster_legalizer, primitive_candidate_block_types);
-                clusters_in_tiles[tile_id].push_back(inserted_cluster_id);
-            }
-        }
-        // Once all blocks are inserted. Clean the clusters to save space. We
-        // can do this because we know the clusters will never be modified again.
-        for (LegalizationClusterId cluster_id : clusters_in_tiles[tile_id]) {
-            cluster_legalizer.clean_cluster(cluster_id);
+            // Once all molecules have been inserted, clean the cluster.
+            // NOTE: Due to current limitations on the cluster legalizer, cannot
+            //       build two clusters at the same time. This will be fixed later.
+            cluster_legalizer.clean_cluster(new_cluster_id);
         }
     }
+
     // Check and output the clustering.
     // FIXME: This should be done in the constructor or somewhere safer.
     std::unordered_set<AtomNetId> is_clock = alloc_and_load_is_clock();
     check_and_output_clustering(cluster_legalizer, packer_opts_, is_clock, arch_);
-    // Destroy the cluster legalizer. This is required to load the packing.
-    // FIXME: This can be removed if we can remove the global accesses in the
-    //        legalizer.
-    // cluster_legalizer.~ClusterLegalizer();
-    }
+    // Reset the cluster legalizer. This is required to load the packing.
+    cluster_legalizer.reset();
     // Regenerate the clustered netlist from the file generated previously.
     vpr_load_packing(vpr_setup_, *arch_);
     load_cluster_constraints();

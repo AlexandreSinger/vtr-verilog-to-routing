@@ -5,11 +5,6 @@
 
 class APNetlist;
 
-// TODO: Split this into two classes: PartialLegalizer and FullLegalizer
-//       Partial legalizer takes a partial placement and returns a partial
-//       placement.
-//       Full legalizer takes a partial placement and returns a clustered
-//       placement which can be fed into the Simulated Annealer.
 class PlacementLegalizer {
 public:
     PlacementLegalizer(const APNetlist& inetlist) : netlist(inetlist) {}
@@ -24,12 +19,4 @@ class FlowBasedLegalizer : public PlacementLegalizer {
 public:
     void legalize(PartialPlacement &p_placement) final;
 };
-
-/*
-class FullLegalizer : public PlacementLegalizer {
-    using PlacementLegalizer::PlacementLegalizer;
-public:
-    void legalize(PartialPlacement &p_placement) final;
-};
-*/
 
