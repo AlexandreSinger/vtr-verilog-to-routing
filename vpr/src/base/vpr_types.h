@@ -496,6 +496,19 @@ class t_cluster_placement_stats {
      */
     t_pb_type* in_flight_type();
 
+    inline void set_pb_graph_node_placement_primitive(const t_pb_graph_node* pb_graph_node,
+                                                      t_cluster_placement_primitive* placement_primitive) {
+        VTR_ASSERT_SAFE(pb_graph_node != nullptr);
+        VTR_ASSERT_SAFE(placement_primitive != nullptr);
+        pb_graph_node_placement_primitive[pb_graph_node] = placement_primitive;
+    }
+
+    inline t_cluster_placement_primitive* get_pb_graph_node_placement_primitive(const t_pb_graph_node* pb_graph_node) {
+        VTR_ASSERT_SAFE(pb_graph_node != nullptr);
+        VTR_ASSERT(pb_graph_node_placement_primitive.count(pb_graph_node) != 0);
+        return pb_graph_node_placement_primitive[pb_graph_node];
+    }
+
     /**
      * @brief free the dynamically allocated memory for primitives
      */
@@ -505,6 +518,8 @@ class t_cluster_placement_stats {
     std::unordered_multimap<int, t_cluster_placement_primitive*> in_flight; ///<ptrs to primitives currently being considered to pack into
     std::unordered_multimap<int, t_cluster_placement_primitive*> tried;     ///<ptrs to primitives that are already tried but current logic block unable to pack to
     std::unordered_multimap<int, t_cluster_placement_primitive*> invalid;   ///<ptrs to primitives that are invalid (already occupied by another primitive in this cluster)
+
+    std::unordered_map<const t_pb_graph_node*, t_cluster_placement_primitive*> pb_graph_node_placement_primitive;
 
     /**
      * @brief iterate over elements of a queue and move its elements to valid_primitives

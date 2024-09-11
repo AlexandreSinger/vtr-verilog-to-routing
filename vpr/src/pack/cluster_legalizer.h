@@ -76,6 +76,8 @@ struct LegalizationCluster {
     ///        Contains information about the atoms in the cluster and how they
     ///        can be routed within.
     t_lb_router_data* router_data;
+
+    t_cluster_placement_stats* placement_stats;
 };
 
 /*
@@ -332,16 +334,17 @@ public:
         return cluster.pr;
     }
 
+    /// @brief Gets the cluster placement stats of the given cluster.
+    inline t_cluster_placement_stats* get_cluster_placement_stats(LegalizationClusterId cluster_id) const {
+        VTR_ASSERT_SAFE(cluster_id.is_valid() && (size_t)cluster_id < legalization_clusters_.size());
+        const LegalizationCluster& cluster = legalization_clusters_[cluster_id];
+        return cluster.placement_stats;
+    }
+
     /// @brief Gets the ID of the cluster that contains the given atom block.
     inline LegalizationClusterId get_atom_cluster(AtomBlockId blk_id) const {
         VTR_ASSERT_SAFE(blk_id.is_valid() && (size_t)blk_id < atom_cluster_.size());
         return atom_cluster_[blk_id];
-    }
-
-    /// @brief Gets the cluster placement stats of the given cluster.
-    inline t_cluster_placement_stats* get_cluster_placement_stats(LegalizationClusterId cluster_id) const {
-        VTR_ASSERT_SAFE(cluster_id.is_valid() && (size_t)cluster_id < legalization_clusters_.size());
-        return &(cluster_placement_stats_[get_cluster_type(cluster_id)->index]);
     }
 
     /// @brief Returns true if the given atom block has been packed into a
@@ -413,14 +416,6 @@ private:
     ///        belong to different NoC groups can't be clustered with each other
     ///        into the same clustered block.
     vtr::vector<AtomBlockId, NocGroupId> atom_noc_grp_id_;
-
-    /// @brief Stats keeper for placement information during packing/clustering.
-    /// TODO: This should be a vector.
-    /// FIXME: This keeps the stats for each cluster type. This is fine within
-    ///        the clusterer, however it yields a limitation where two clusters
-    ///        of the same type cannot be constructed at the same time. This
-    ///        should stored per cluster.
-    t_cluster_placement_stats* cluster_placement_stats_ = nullptr;
 
     /// @brief The utilization of external input/output pins during packing
     ///        (between 0 and 1).
