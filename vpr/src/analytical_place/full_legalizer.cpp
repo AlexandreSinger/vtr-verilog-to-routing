@@ -390,6 +390,13 @@ void FullLegalizer::place_clusters(const ClusteredNetlist& clb_nlist,
     //      - This may be needed to perform SA. Not needed right now.
 
     // TODO: Check initial placement legality
+
+    // FIXME: Create a more general form of check_place from place.cpp which can
+    //        check for invariants such as
+    //              - every cluster is placed
+    //              - every cluster exists in a legal position
+    //                  - including sub_tile!
+    //              - etc.
 }
 
 void FullLegalizer::legalize(const PartialPlacement& p_placement) {
