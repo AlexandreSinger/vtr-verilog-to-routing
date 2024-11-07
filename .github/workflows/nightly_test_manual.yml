@@ -21,11 +21,18 @@ jobs:
     if: ${{ github.repository_owner == 'verilog-to-routing' }}
 
     name: 'Nightly Tests Manual Run'
-    # TODO: This will need to change to a realistic number!
-    timeout-minutes: 3000
+    # This workflow is expected to take around 19 hours. Giving it 24 hours
+    # before timing out.
+    timeout-minutes: 1440
     runs-on: [self-hosted, Linux, X64, SAVI]
 
     steps:
+    # Clean previous runs of this workflow.
+    - name: 'Cleanup build folder'
+      run: |
+        rm -rf ./* || true
+        rm -rf ./.??* || true
+
     # Checkout the VTR repo.
     - uses: actions/checkout@v4
       with:
@@ -52,6 +59,7 @@ jobs:
     #       all of these.
     - name: 'Run Nightly Tests'
       run: |
+        source .venv/bin/activate
         ./run_reg_test.py -j12 \
             vtr_reg_nightly_test1 \
             vtr_reg_nightly_test2 \
