@@ -73,14 +73,6 @@ public:
 
 private:
     /**
-     * @brief Helper method to create the clusters from the given partial
-     *        placement.
-     * TODO: Should return a ClusteredNetlist object, but need to wait until
-     *       it is separated from load_cluster_constraints.
-     */
-    void create_clusters(const PartialPlacement& p_placement);
-
-    /**
      * @brief Helper method to place the clusters based on the given partial
      *        placement.
      */

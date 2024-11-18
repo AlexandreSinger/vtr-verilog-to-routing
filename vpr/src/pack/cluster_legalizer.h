@@ -421,6 +421,12 @@ public:
         return cluster.pr;
     }
 
+    inline const std::vector<t_pack_molecule*>& get_cluster_molecules(LegalizationClusterId cluster_id) const {
+        VTR_ASSERT_SAFE(cluster_id.is_valid() && (size_t)cluster_id < legalization_clusters_.size());
+        const LegalizationCluster& cluster = legalization_clusters_[cluster_id];
+        return cluster.molecules;
+    }
+
     /// @brief Gets the ID of the cluster that contains the given atom block.
     inline LegalizationClusterId get_atom_cluster(AtomBlockId blk_id) const {
         VTR_ASSERT_SAFE(blk_id.is_valid() && (size_t)blk_id < atom_cluster_.size());
