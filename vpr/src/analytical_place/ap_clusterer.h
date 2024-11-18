@@ -3,10 +3,13 @@
 #pragma once
 
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "ap_netlist_fwd.h"
 #include "cluster_legalizer.h"
 #include "vpr_types.h"
+#include "vtr_strong_id.h"
+#include "vtr_vector.h"
 
 class APNetlist;
 class PartialPlacement;
@@ -29,6 +32,54 @@ protected:
     const APNetlist& netlist_;
 
     int log_verbosity_;
+};
+
+struct ap_gain_cluster_id_tag;
+typedef vtr::StrongId<ap_gain_cluster_id_tag, size_t> APGainClusterId;
+
+struct APGainCluster {
+    // Valid will signify if the given cluster is no longer in use (i.e. it was
+    // merged into another cluster). This is useful for debugging since every
+    // molecule will be in its own cluster at the beginning.
+    bool valid = true;
+    std::unordered_set<AtomPinId> external_pins;
+    std::unordered_set<AtomPinId> internal_pins;
+    std::vector<const t_pack_molecule*> molecules;
+
+    APGainCluster() {}
+
+    APGainCluster(const t_pack_molecule* mol,
+                  const AtomNetlist& netlist);
+};
+
+class APClusterGainCalculator {
+private:
+
+    const AtomNetlist& atom_netlist_;
+    const Prepacker& prepacker_;
+    const PartialPlacement& p_placement_;
+
+    vtr::vector<APGainClusterId, APGainCluster> gain_clusters_;
+
+    std::unordered_map<const t_pack_molecule*, APGainClusterId> molecule_gain_cluster_;
+
+public:
+
+    APClusterGainCalculator(const AtomNetlist& atom_netlist,
+                            const Prepacker& prepacker,
+                            const PartialPlacement& p_placement);
+
+    APGainClusterId create_gain_cluster(const t_pack_molecule* mol);
+
+    // Get the gain of adding molecule mol to the gain cluster.
+    float get_incremental_gain(APGainClusterId gain_cluster_id, const t_pack_molecule* mol);
+
+    // Add molecule mol to the gain cluster.
+    void add_mol_to_gain_cluster(const t_pack_molecule* mol, APGainClusterId gain_cluster_id);
+
+    // Cleans the given gain cluster assuming that it will never be used again
+    // and the molecules inside will never be used again.
+    void clean_gain_cluster(APGainClusterId gain_cluster_id);
 };
 
 class GreedyAPClusterer : public APClusterer {

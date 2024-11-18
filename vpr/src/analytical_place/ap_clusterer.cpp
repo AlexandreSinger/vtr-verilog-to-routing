@@ -21,6 +21,65 @@
 #include "vpr_types.h"
 #include "vtr_assert.h"
 
+APGainCluster::APGainCluster(const t_pack_molecule* mol,
+                             const AtomNetlist& netlist) : molecules({mol}) {
+    // Compute the internal and external pins.
+
+    // Internal pins are pins connected to a block in the molecule.
+    for (AtomBlockId blk_id : mol->atom_block_ids) {
+        if (!blk_id.is_valid())
+            continue;
+        internal_pins.insert(netlist.block_pins(blk_id).begin(), netlist.block_pins(blk_id).end());
+    }
+
+    // External pins are pins connected to blocks connected to a block in the
+    // molecule, but are not in the molecule itself.
+    // Get all of the nets connected to this molecule from the internal pins.
+    std::unordered_set<AtomNetId> connected_nets;
+    for (AtomPinId internal_pin : internal_pins) {
+        connected_nets.insert(netlist.pin_net(internal_pin));
+    }
+    // Get all of the pins in all nets which are not internal pins.
+    for (AtomNetId connected_net : connected_nets) {
+        for (AtomPinId net_pin : netlist.net_pins(connected_net)) {
+            // If this is an internal pin, it cannot be an external pin.
+            if (internal_pins.count(net_pin) != 0)
+                continue;
+            external_pins.insert(net_pin);
+        }
+    }
+}
+
+APClusterGainCalculator::APClusterGainCalculator(const AtomNetlist& atom_netlist,
+                                                 const Prepacker& prepacker,
+                                                 const PartialPlacement& p_placement) : atom_netlist_(atom_netlist),
+                                                                                        prepacker_(prepacker),
+                                                                                        p_placement_(p_placement) {
+    // Create a gain cluster for each molecule now. This allows us to precompute
+    // data for each molecule at the start to make future computations easier.
+    std::vector<t_pack_molecule*> molecules = prepacker.get_molecules_vector();
+    for (const t_pack_molecule* mol : molecules) {
+        APGainClusterId new_gain_cluster_id = APGainClusterId(gain_clusters_.size());
+        molecule_gain_cluster_[mol] = new_gain_cluster_id;
+        gain_clusters_.emplace_back(mol, atom_netlist);
+    }
+}
+
+APGainClusterId APClusterGainCalculator::create_gain_cluster(const t_pack_molecule* mol) {
+    VTR_ASSERT(mol != nullptr);
+    VTR_ASSERT(molecule_gain_cluster_.count(mol) != 0);
+    VTR_ASSERT(gain_clusters_[molecule_gain_cluster_[mol]].valid);
+    return molecule_gain_cluster_[mol];
+}
+
+void APClusterGainCalculator::add_mol_to_gain_cluster(const t_pack_molecule* mol,
+                                                      APGainClusterId gain_cluster_id) {
+    VTR_ASSERT(mol != nullptr);
+    VTR_ASSERT(gain_cluster_id.is_valid() && (size_t)gain_cluster_id < gain_clusters_.size());
+    APGainCluster& gain_cluster = gain_clusters_[gain_cluster_id];
+    // TODO: Finish this function.
+}
+
 GreedyAPClusterer::GreedyAPClusterer(const APNetlist& netlist,
                                      t_vpr_setup& vpr_setup,
                                      const t_arch* arch,
