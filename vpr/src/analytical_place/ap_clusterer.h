@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -41,9 +42,20 @@ struct APGainCluster {
     // Valid will signify if the given cluster is no longer in use (i.e. it was
     // merged into another cluster). This is useful for debugging since every
     // molecule will be in its own cluster at the beginning.
+    // FIXME: It may be cleaner and more obvious to just have a map in the
+    //        calculator class of booleans. "is contained in cluster".
     bool valid = true;
+    // FIXME: The external pins are likely going to be unused. We only need
+    //        the internal pins.
     std::unordered_set<AtomPinId> external_pins;
+    // Internal pins are pins conencted to blocks within the cluster.
     std::unordered_set<AtomPinId> internal_pins;
+
+    // Nets that have at least one pin outside of the cluster.
+    std::unordered_set<AtomNetId> external_nets;
+    // Nets that have all pins inside the cluster.
+    std::unordered_set<AtomNetId> internal_nets;
+
     std::vector<const t_pack_molecule*> molecules;
 
     APGainCluster() {}
@@ -54,6 +66,10 @@ struct APGainCluster {
 
 class APClusterGainCalculator {
 private:
+    static constexpr float pin_gain_weight_ = 1.f;
+
+    // FIXME: SET THIS BACK FROM 0!!!
+    static constexpr float wl_gain_weight_ = 0.f;
 
     const AtomNetlist& atom_netlist_;
     const Prepacker& prepacker_;
@@ -72,10 +88,14 @@ public:
     APGainClusterId create_gain_cluster(const t_pack_molecule* mol);
 
     // Get the gain of adding molecule mol to the gain cluster.
-    float get_incremental_gain(APGainClusterId gain_cluster_id, const t_pack_molecule* mol);
+    float get_gain(APGainClusterId gain_cluster_id, const t_pack_molecule* mol);
 
     // Add molecule mol to the gain cluster.
     void add_mol_to_gain_cluster(const t_pack_molecule* mol, APGainClusterId gain_cluster_id);
+
+    // Destroy the cluster. Implies that the molecules inside will be clustered
+    // into other clusters later.
+    void destroy_gain_cluster(APGainClusterId gain_cluster_id);
 
     // Cleans the given gain cluster assuming that it will never be used again
     // and the molecules inside will never be used again.
@@ -97,10 +117,15 @@ private:
     // Atom netlist used for getting the model of atoms for starting new clusters.
     const AtomNetlist& atom_netlist_;
 
+    // Prepacker used for the gain calculator.
+    const Prepacker& prepacker_;
+
     // Packer opts used to create the legalizer and output the clustering.
     const t_packer_opts& packer_opts_;
 
     ClusterLegalizer cluster_legalizer_;
+
+    std::unique_ptr<APClusterGainCalculator> gain_calculator_;
 
     std::map<const t_model*, std::vector<t_logical_block_type_ptr>> primitive_candidate_block_types_;
 
@@ -119,13 +144,11 @@ private:
 
     bool add_block_to_cluster(APBlockId block, LegalizationClusterId cluster_id);
 
-    void destroy_cluster(LegalizationClusterId cluster_id);
-
-    bool grow_cluster(APBlockId seed, const PartialPlacement& p_placement, ClusterLegalizationStrategy strategy);
+    bool grow_cluster(APBlockId seed, ClusterLegalizationStrategy strategy);
 
     // Compatible: unclustered + has a spot in the cluster to be placed.
-    APBlockId get_highest_gain_compatible_neighbor(LegalizationClusterId cluster_id,
-                                                   const PartialPlacement& p_placement);
+    APBlockId get_highest_gain_compatible_neighbor(APGainClusterId gain_cluster_id,
+                                                   LegalizationClusterId leg_cluster_id);
 
 public:
 

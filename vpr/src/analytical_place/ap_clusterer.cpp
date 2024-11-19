@@ -1,6 +1,9 @@
 
 #include "ap_clusterer.h"
+#include <algorithm>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <unordered_set>
 #include <vector>
 #include "ShowSetup.h"
@@ -22,14 +25,14 @@
 #include "vtr_assert.h"
 
 APGainCluster::APGainCluster(const t_pack_molecule* mol,
-                             const AtomNetlist& netlist) : molecules({mol}) {
+                             const AtomNetlist& atom_netlist) : molecules({mol}) {
     // Compute the internal and external pins.
 
     // Internal pins are pins connected to a block in the molecule.
     for (AtomBlockId blk_id : mol->atom_block_ids) {
         if (!blk_id.is_valid())
             continue;
-        internal_pins.insert(netlist.block_pins(blk_id).begin(), netlist.block_pins(blk_id).end());
+        internal_pins.insert(atom_netlist.block_pins(blk_id).begin(), atom_netlist.block_pins(blk_id).end());
     }
 
     // External pins are pins connected to blocks connected to a block in the
@@ -37,15 +40,32 @@ APGainCluster::APGainCluster(const t_pack_molecule* mol,
     // Get all of the nets connected to this molecule from the internal pins.
     std::unordered_set<AtomNetId> connected_nets;
     for (AtomPinId internal_pin : internal_pins) {
-        connected_nets.insert(netlist.pin_net(internal_pin));
+        connected_nets.insert(atom_netlist.pin_net(internal_pin));
     }
     // Get all of the pins in all nets which are not internal pins.
     for (AtomNetId connected_net : connected_nets) {
-        for (AtomPinId net_pin : netlist.net_pins(connected_net)) {
+        for (AtomPinId net_pin : atom_netlist.net_pins(connected_net)) {
             // If this is an internal pin, it cannot be an external pin.
             if (internal_pins.count(net_pin) != 0)
                 continue;
             external_pins.insert(net_pin);
+        }
+    }
+
+    // Collect the nets
+    for (AtomPinId internal_pin : internal_pins) {
+        AtomNetId net = atom_netlist.pin_net(internal_pin);
+        bool all_pins_internal = true;
+        for (AtomPinId net_pin : atom_netlist.net_pins(net)) {
+            if (internal_pins.count(net_pin) == 0) {
+                all_pins_internal = false;
+                break;
+            }
+        }
+        if (all_pins_internal) {
+            internal_nets.insert(net);
+        } else {
+            external_nets.insert(net);
         }
     }
 }
@@ -62,22 +82,258 @@ APClusterGainCalculator::APClusterGainCalculator(const AtomNetlist& atom_netlist
         APGainClusterId new_gain_cluster_id = APGainClusterId(gain_clusters_.size());
         molecule_gain_cluster_[mol] = new_gain_cluster_id;
         gain_clusters_.emplace_back(mol, atom_netlist);
+        VTR_ASSERT(gain_clusters_[new_gain_cluster_id].molecules.size() == 1);
+        VTR_ASSERT(gain_clusters_[new_gain_cluster_id].molecules[0] == mol);
     }
 }
 
 APGainClusterId APClusterGainCalculator::create_gain_cluster(const t_pack_molecule* mol) {
     VTR_ASSERT(mol != nullptr);
     VTR_ASSERT(molecule_gain_cluster_.count(mol) != 0);
-    VTR_ASSERT(gain_clusters_[molecule_gain_cluster_[mol]].valid);
-    return molecule_gain_cluster_[mol];
+
+    // Get the precomputed molecule gain cluster and ensure it has not been
+    // clustered somewhere else.
+    APGainClusterId molecule_gain_cluster_id = molecule_gain_cluster_[mol];
+    VTR_ASSERT(molecule_gain_cluster_id.is_valid());
+    APGainCluster& molecule_gain_cluster = gain_clusters_[molecule_gain_cluster_id];
+    // FIXME: Change this to "is_molecule_clustered" maybe...
+    VTR_ASSERT(molecule_gain_cluster.valid);
+
+    VTR_ASSERT(molecule_gain_cluster.molecules.size() == 1);
+    VTR_ASSERT(molecule_gain_cluster.molecules[0] == mol);
+
+    // Create a new gain cluster which is identical to the molecule's gain
+    // cluster.
+    APGainClusterId new_gain_cluster_id = APGainClusterId(gain_clusters_.size());
+    gain_clusters_.push_back(molecule_gain_cluster);
+
+    VTR_ASSERT(gain_clusters_[new_gain_cluster_id].molecules.size() == 1);
+    VTR_ASSERT(gain_clusters_[new_gain_cluster_id].molecules[0] == mol);
+
+    // Mark the molecule gain cluster as clustered.
+    // NOTE: The previous insertion invalidates all references. Need to get a new
+    //       reference.
+    gain_clusters_[molecule_gain_cluster_id].valid = false;
+
+    return new_gain_cluster_id;
 }
 
 void APClusterGainCalculator::add_mol_to_gain_cluster(const t_pack_molecule* mol,
                                                       APGainClusterId gain_cluster_id) {
     VTR_ASSERT(mol != nullptr);
     VTR_ASSERT(gain_cluster_id.is_valid() && (size_t)gain_cluster_id < gain_clusters_.size());
+
+    // Get the current gain cluster to insert the molecule into.
     APGainCluster& gain_cluster = gain_clusters_[gain_cluster_id];
-    // TODO: Finish this function.
+
+    // Get the cluster containing only the molecule.
+    VTR_ASSERT(molecule_gain_cluster_.count(mol) != 0);
+    APGainClusterId molecule_gain_cluster_id = molecule_gain_cluster_[mol];
+    VTR_ASSERT(molecule_gain_cluster_id.is_valid());
+    APGainCluster& molecule_gain_cluster = gain_clusters_[molecule_gain_cluster_id];
+
+    // Insert the molecule into the gain cluster.
+    gain_cluster.molecules.push_back(mol);
+    // Mark this molecule as clustered.
+    VTR_ASSERT(molecule_gain_cluster.valid);
+    molecule_gain_cluster.valid = false;
+
+    // Compute the new external pins.
+    // Get the intersection of the two external pins. These are the shared
+    // external pins between the two clusters.
+    std::unordered_set<AtomPinId> shared_external_pins;
+    std::set_intersection(gain_cluster.external_pins.begin(),
+                          gain_cluster.external_pins.end(),
+                          molecule_gain_cluster.external_pins.begin(),
+                          molecule_gain_cluster.external_pins.end(),
+                          std::inserter(shared_external_pins, shared_external_pins.begin()));
+    // The new external pins is the union of the two external pins, without the
+    // shared external pins.
+    gain_cluster.external_pins.insert(molecule_gain_cluster.external_pins.begin(),
+                                      molecule_gain_cluster.external_pins.end());
+    for (AtomPinId shared_external_pin : shared_external_pins) {
+        gain_cluster.external_pins.erase(shared_external_pin);
+    }
+
+    // Compute the new internal pins.
+    // The new internal pins are simply the union of the internal pins of both
+    // clusters and the shared external pins.
+    gain_cluster.internal_pins.insert(molecule_gain_cluster.internal_pins.begin(),
+                                      molecule_gain_cluster.internal_pins.end());
+    gain_cluster.internal_pins.insert(shared_external_pins.begin(),
+                                      shared_external_pins.end());
+
+    // Compute the nets.
+    // The only external nets which can become internal are the nets that are
+    // shared between the two clusters.
+    std::unordered_set<AtomNetId> shared_external_nets;
+    std::set_intersection(gain_cluster.external_nets.begin(),
+                          gain_cluster.external_nets.end(),
+                          molecule_gain_cluster.external_nets.begin(),
+                          molecule_gain_cluster.external_nets.end(),
+                          std::inserter(shared_external_nets, shared_external_nets.begin()));
+    // Combine the internal and external nets.
+    gain_cluster.internal_nets.insert(molecule_gain_cluster.internal_nets.begin(),
+                                      molecule_gain_cluster.internal_nets.end());
+    gain_cluster.external_nets.insert(molecule_gain_cluster.external_nets.begin(),
+                                      molecule_gain_cluster.external_nets.end());
+    // Check if the shared external nets are now internal. If so, move them to
+    // the correct set.
+    for (AtomNetId net : shared_external_nets) {
+        // FIXME: This is duplicate code.
+        bool all_pins_internal = true;
+        for (AtomPinId net_pin : atom_netlist_.net_pins(net)) {
+            if (gain_cluster.internal_pins.count(net_pin) == 0) {
+                all_pins_internal = false;
+                break;
+            }
+        }
+        if (all_pins_internal) {
+            gain_cluster.external_nets.erase(net);
+            gain_cluster.internal_nets.insert(net);
+        }
+    }
+
+
+}
+
+float APClusterGainCalculator::get_gain(APGainClusterId gain_cluster_id,
+                                        const t_pack_molecule* mol) {
+    VTR_ASSERT(mol != nullptr);
+    VTR_ASSERT(gain_cluster_id.is_valid() && (size_t)gain_cluster_id < gain_clusters_.size());
+
+    // Get the current gain cluster to insert the molecule into.
+    APGainCluster& gain_cluster = gain_clusters_[gain_cluster_id];
+
+    // Get the cluster containing only the molecule.
+    VTR_ASSERT(molecule_gain_cluster_.count(mol) != 0);
+    APGainClusterId molecule_gain_cluster_id = molecule_gain_cluster_[mol];
+    VTR_ASSERT(molecule_gain_cluster_id.is_valid());
+    APGainCluster& molecule_gain_cluster = gain_clusters_[molecule_gain_cluster_id];
+    VTR_ASSERT(molecule_gain_cluster.valid);
+
+    // Compute the Pin Sharing Gain as described by Singhal et al.
+    float pin_gain = 0.f;
+    size_t total_nets = 0;
+    // Internal nets are simple. The gain increases by 1 for each internal net.
+    pin_gain += gain_cluster.internal_nets.size();
+    pin_gain += molecule_gain_cluster.internal_nets.size();
+    total_nets += gain_cluster.internal_nets.size();
+    total_nets += molecule_gain_cluster.internal_nets.size();
+    // Collect the shared external nets. These will be handled special.
+    std::unordered_set<AtomNetId> shared_external_nets;
+    // External nets which are not shared.
+    for (AtomNetId net : gain_cluster.external_nets) {
+        if (molecule_gain_cluster.internal_nets.count(net) != 0) {
+            continue;
+            shared_external_nets.insert(net);
+        }
+        // Count the number of internal pins in this net.
+        size_t num_internal_pins = 0;
+        for (AtomPinId pin : atom_netlist_.net_pins(net)) {
+            if (gain_cluster.internal_pins.count(pin) != 0) {
+                num_internal_pins++;
+            }
+        }
+        VTR_ASSERT(num_internal_pins != 0);
+        pin_gain += static_cast<float>(num_internal_pins - 1) / static_cast<float>(atom_netlist_.net_pins(net).size() - 1);
+        total_nets++;
+    }
+    // FIXME: Duplicate code!
+    for (AtomNetId net : molecule_gain_cluster.external_nets) {
+        if (gain_cluster.internal_nets.count(net) != 0) {
+            continue;
+            shared_external_nets.insert(net);
+        }
+        // Count the number of internal pins in this net.
+        size_t num_internal_pins = 0;
+        for (AtomPinId pin : atom_netlist_.net_pins(net)) {
+            if (molecule_gain_cluster.internal_pins.count(pin) != 0) {
+                num_internal_pins++;
+            }
+        }
+        VTR_ASSERT(num_internal_pins != 0);
+        pin_gain += static_cast<float>(num_internal_pins - 1) / static_cast<float>(atom_netlist_.net_pins(net).size() - 1);
+        total_nets++;
+    }
+    // Shared external nets are handled specal.
+    for (AtomNetId net : shared_external_nets) {
+        // Count the number of internal pins in this net.
+        size_t num_internal_pins = 0;
+        for (AtomPinId pin : atom_netlist_.net_pins(net)) {
+            if (molecule_gain_cluster.internal_pins.count(pin) != 0 ||
+                gain_cluster.internal_pins.count(pin) != 0) {
+                num_internal_pins++;
+            }
+        }
+        VTR_ASSERT(num_internal_pins != 0);
+        pin_gain += static_cast<float>(num_internal_pins - 1) / static_cast<float>(atom_netlist_.net_pins(net).size() - 1);
+        total_nets++;
+    }
+    // Divide the gain by the total number of nets.
+    // TODO: The LSC paper recommended dividing by 1 + c * total_nets where
+    //       c is an empirically-determined constant. To investigate.
+    pin_gain /= static_cast<float>(total_nets);
+
+    // TODO: Implement the WL gain.
+    float wl_gain = 0.f;
+
+    // Return a weighted mean of the gain terms.
+    float total_gain = (pin_gain * pin_gain_weight_) + (wl_gain * wl_gain_weight_);
+    total_gain /= (pin_gain_weight_ + wl_gain_weight_);
+    return total_gain;
+}
+
+void APClusterGainCalculator::destroy_gain_cluster(APGainClusterId gain_cluster_id) {
+    VTR_ASSERT(gain_cluster_id.is_valid() && (size_t)gain_cluster_id < gain_clusters_.size());
+
+    // Mark all of the molecules in this gain cluster as unclustered.
+    APGainCluster& gain_cluster = gain_clusters_[gain_cluster_id];
+    for (const t_pack_molecule* mol : gain_cluster.molecules) {
+        VTR_ASSERT(molecule_gain_cluster_.count(mol) != 0);
+        APGainClusterId molecule_gain_cluster_id = molecule_gain_cluster_[mol];
+        VTR_ASSERT(molecule_gain_cluster_id.is_valid());
+        APGainCluster& molecule_gain_cluster = gain_clusters_[molecule_gain_cluster_id];
+        VTR_ASSERT(!molecule_gain_cluster.valid);
+        molecule_gain_cluster.valid = true;
+    }
+
+    // Clean up all the data in the object. We will not remove it from the
+    // vector for now. There is no reason to iterate over all of the gain
+    // clusters, so we can tolerate some invalid members.
+    gain_cluster.external_pins.clear();
+    gain_cluster.internal_pins.clear();
+    gain_cluster.external_nets.clear();
+    gain_cluster.internal_nets.clear();
+    gain_cluster.molecules.clear();
+}
+
+void APClusterGainCalculator::clean_gain_cluster(APGainClusterId gain_cluster_id) {
+    VTR_ASSERT(gain_cluster_id.is_valid() && (size_t)gain_cluster_id < gain_clusters_.size());
+
+    // Clean up all of the data for each molecule.
+    APGainCluster& gain_cluster = gain_clusters_[gain_cluster_id];
+    for (const t_pack_molecule* mol : gain_cluster.molecules) {
+        VTR_ASSERT(molecule_gain_cluster_.count(mol) != 0);
+        APGainClusterId molecule_gain_cluster_id = molecule_gain_cluster_[mol];
+        VTR_ASSERT(molecule_gain_cluster_id.is_valid());
+        APGainCluster& molecule_gain_cluster = gain_clusters_[molecule_gain_cluster_id];
+        VTR_ASSERT(!molecule_gain_cluster.valid);
+        molecule_gain_cluster.external_pins.clear();
+        molecule_gain_cluster.internal_pins.clear();
+        molecule_gain_cluster.external_nets.clear();
+        molecule_gain_cluster.internal_nets.clear();
+        molecule_gain_cluster.molecules.clear();
+    }
+
+    // Clean up all the data in the object. We will not remove it from the
+    // vector for now. There is no reason to iterate over all of the gain
+    // clusters, so we can tolerate some invalid members.
+    gain_cluster.external_pins.clear();
+    gain_cluster.internal_pins.clear();
+    gain_cluster.external_nets.clear();
+    gain_cluster.internal_nets.clear();
+    gain_cluster.molecules.clear();
 }
 
 GreedyAPClusterer::GreedyAPClusterer(const APNetlist& netlist,
@@ -95,6 +351,7 @@ GreedyAPClusterer::GreedyAPClusterer(const APNetlist& netlist,
      vpr_setup_(vpr_setup),
      arch_(arch),
      atom_netlist_(atom_netlist),
+     prepacker_(prepacker),
      packer_opts_(packer_opts),
      cluster_legalizer_(atom_netlist,
                         prepacker,
@@ -148,17 +405,19 @@ APBlockId GreedyAPClusterer::select_seed_block() {
     return best_unclustered_block;
 }
 
-APBlockId GreedyAPClusterer::get_highest_gain_compatible_neighbor(LegalizationClusterId cluster_id,
-                                                                  const PartialPlacement& p_placement) {
+APBlockId GreedyAPClusterer::get_highest_gain_compatible_neighbor(APGainClusterId gain_cluster_id,
+                                                                  LegalizationClusterId leg_cluster_id) {
     // TODO: Should maintain a netlist where we can quickly lookup the neighbors.
     // This should be abstracted into the gain calculator class. The greedy
     // clusterer would just ask which has the lowest gain. This can be pre-computed
     // to save lot of time.
 
     // For now just get the closest neighbor. This is for testing code.
-    APBlockId closest_neighbor;
-    double closest_neighbor_distance = std::numeric_limits<double>::max();
-    const std::vector<t_pack_molecule*>& cluster_molecules = cluster_legalizer_.get_cluster_molecules(cluster_id);
+    // FIXME: Should precompute the neighbors. This can probably be done in the
+    //        gain calculator.
+    APBlockId highest_gain_neighbor;
+    float highest_gain = std::numeric_limits<float>::lowest();
+    const std::vector<t_pack_molecule*>& cluster_molecules = cluster_legalizer_.get_cluster_molecules(leg_cluster_id);
     for (const t_pack_molecule* molecule : cluster_molecules) {
         APBlockId block = mol_block_[molecule];
 
@@ -171,29 +430,21 @@ APBlockId GreedyAPClusterer::get_highest_gain_compatible_neighbor(LegalizationCl
                 t_pack_molecule* neighbor_mol = const_cast<t_pack_molecule*>(netlist_.block_molecule(neighbor_block));
                 if (cluster_legalizer_.is_mol_clustered(neighbor_mol))
                     continue;
-                if (!cluster_legalizer_.is_molecule_compatible(neighbor_mol, cluster_id))
+                if (!cluster_legalizer_.is_molecule_compatible(neighbor_mol, leg_cluster_id))
                     continue;
-                // FIXME: This should really be the distance to the centroid.
-                double dx = p_placement.block_x_locs[neighbor_block] - p_placement.block_x_locs[block];
-                double dy = p_placement.block_y_locs[neighbor_block] - p_placement.block_y_locs[block];
-                double dist = (dx * dx) + (dy * dy);
-                if (dist < closest_neighbor_distance) {
-                    closest_neighbor = neighbor_block;
-                    closest_neighbor_distance = dist;
+                float gain = gain_calculator_->get_gain(gain_cluster_id, neighbor_mol);
+                if (gain > highest_gain) {
+                    highest_gain_neighbor = neighbor_block;
+                    highest_gain = gain;
                 }
             }
         }
     }
 
-    VTR_ASSERT(closest_neighbor_distance != std::numeric_limits<double>::max() ||
-               !closest_neighbor.is_valid());
+    VTR_ASSERT(highest_gain != std::numeric_limits<float>::lowest() ||
+               !highest_gain_neighbor.is_valid());
 
-    return closest_neighbor;
-}
-
-void GreedyAPClusterer::destroy_cluster(LegalizationClusterId cluster_id) {
-    VTR_ASSERT_DEBUG(cluster_id.is_valid());
-    cluster_legalizer_.destroy_cluster(cluster_id);
+    return highest_gain_neighbor;
 }
 
 bool GreedyAPClusterer::add_block_to_cluster(APBlockId block,
@@ -244,7 +495,6 @@ LegalizationClusterId GreedyAPClusterer::start_new_cluster(APBlockId seed) {
 }
 
 bool GreedyAPClusterer::grow_cluster(APBlockId seed,
-                                     const PartialPlacement& p_placement,
                                      ClusterLegalizationStrategy strategy) {
     VTR_ASSERT(seed.is_valid());
 
@@ -255,12 +505,14 @@ bool GreedyAPClusterer::grow_cluster(APBlockId seed,
     LegalizationClusterId new_cluster_id = start_new_cluster(seed);
     VTR_ASSERT(new_cluster_id.is_valid());
 
+    // Start the new cluster in the gain calculator.
+    APGainClusterId gain_cluster_id = gain_calculator_->create_gain_cluster(netlist_.block_molecule(seed));
+
     // Add blocks to the cluster.
     while (true) {
         // Get the highest gain compatible neighbor as a candidate to add to the
         // cluster. If one cannot be found, break.
-        APBlockId candidate_block = get_highest_gain_compatible_neighbor(new_cluster_id,
-                                                                         p_placement);
+        APBlockId candidate_block = get_highest_gain_compatible_neighbor(gain_cluster_id, new_cluster_id);
         if (!candidate_block.is_valid())
             break;
 
@@ -269,6 +521,8 @@ bool GreedyAPClusterer::grow_cluster(APBlockId seed,
         bool add_success = add_block_to_cluster(candidate_block, new_cluster_id);
         if (!add_success)
             break;
+
+        gain_calculator_->add_mol_to_gain_cluster(netlist_.block_molecule(candidate_block), gain_cluster_id);
     }
 
     // If the cluster legalization strategy skipped intra LB routing, need to
@@ -276,11 +530,14 @@ bool GreedyAPClusterer::grow_cluster(APBlockId seed,
     if (strategy == ClusterLegalizationStrategy::SKIP_INTRA_LB_ROUTE) {
         bool cluster_is_legal = cluster_legalizer_.check_cluster_legality(new_cluster_id);
         if (!cluster_is_legal) {
-            destroy_cluster(new_cluster_id);
+            gain_calculator_->destroy_gain_cluster(gain_cluster_id);
+            cluster_legalizer_.destroy_cluster(new_cluster_id);
             cluster_legalizer_.compress();
             return false;
         }
     }
+
+    gain_calculator_->clean_gain_cluster(gain_cluster_id);
 
     // Clean the cluster. Since we know we will never modify the cluster passed
     // this point, we can remove some of the data from the legalizer to save
@@ -299,6 +556,9 @@ void GreedyAPClusterer::create_clusters(const PartialPlacement& p_placement) {
     // TODO: The partial placement should be fed into the gain calculator once
     //       it is created. It may need to be passed into grow_cluster or
     //       select seed_block.
+    gain_calculator_ = std::make_unique<APClusterGainCalculator>(atom_netlist_,
+                                                                 prepacker_,
+                                                                 p_placement);
 
     // Select the starting seed block.
     APBlockId seed_block = select_seed_block();
@@ -306,14 +566,12 @@ void GreedyAPClusterer::create_clusters(const PartialPlacement& p_placement) {
     while (seed_block.is_valid()) {
         // Grow the cluster by only performing intra LB routing at end.
         bool success = grow_cluster(seed_block,
-                                    p_placement,
                                     ClusterLegalizationStrategy::SKIP_INTRA_LB_ROUTE);
         if (!success) {
             // If growing the cluster failed (meaning that the final intra LB
             // routing failed), try to grow the cluster again but run intra LB
             // routing for every molecule that is inserted.
             success = grow_cluster(seed_block,
-                                   p_placement,
                                    ClusterLegalizationStrategy::FULL);
             // Some cluster must be created. Even a cluster of just 1 molecule
             // should always exist.
@@ -323,6 +581,9 @@ void GreedyAPClusterer::create_clusters(const PartialPlacement& p_placement) {
         // Select the next seed block.
         seed_block = select_seed_block();
     }
+
+    // Destory the gain calculator. No longer needed.
+    gain_calculator_.reset();
 
     // Check and output the clustering
     std::unordered_set<AtomNetId> is_clock = alloc_and_load_is_clock();
