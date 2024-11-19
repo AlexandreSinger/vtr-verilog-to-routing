@@ -412,6 +412,8 @@ APBlockId GreedyAPClusterer::get_highest_gain_compatible_neighbor(APGainClusterI
     // clusterer would just ask which has the lowest gain. This can be pre-computed
     // to save lot of time.
 
+    // FIXME: We should ignore high-fanout nets!
+
     // For now just get the closest neighbor. This is for testing code.
     // FIXME: Should precompute the neighbors. This can probably be done in the
     //        gain calculator.
@@ -423,6 +425,11 @@ APBlockId GreedyAPClusterer::get_highest_gain_compatible_neighbor(APGainClusterI
 
         for (APPinId pin : netlist_.block_pins(block)) {
             APNetId net = netlist_.pin_net(pin);
+            
+            // FIXME: This should really be on the atom netlist not AP netlist.
+            if (netlist_.net_pins(net).size() > 50)
+                continue;
+
             for (APPinId neighbor_pin : netlist_.net_pins(net)) {
                 APBlockId neighbor_block = netlist_.pin_block(neighbor_pin);
                 if (neighbor_block == block)
