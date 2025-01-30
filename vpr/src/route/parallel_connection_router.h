@@ -50,11 +50,15 @@ public:
 class barrier_mutex_t {
     std::mutex mutex_;
     std::condition_variable cv_;
-    size_t count_;
+    std::atomic<size_t> count_;
     size_t max_count_;
-    size_t generation_ = 0;
+    std::atomic<size_t> generation_ = 0;
 public:
     explicit barrier_mutex_t(size_t num_threads) : count_(num_threads), max_count_(num_threads) { }
+
+    void init() {
+        // Unused.
+    }
 
     void wait() {
         std::unique_lock<std::mutex> lock{mutex_};
@@ -89,6 +93,7 @@ public:
 
     void init() {
         local_sense_ = false;
+        sense_ = false;
     }
 
     void wait() {
@@ -149,26 +154,41 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         , is_router_destroying_(false)
         , locks_(rr_node_route_inf.size())
         , router_debug_(false)
-        , multi_queue_direct_draining_(multi_queue_direct_draining) {
+        , multi_queue_direct_draining_(multi_queue_direct_draining)
+        , multi_queue_num_threads_(multi_queue_num_threads)
+        , thread_affinity_(thread_affinity) {
         heap_.init_heap(grid);
         only_opin_inter_layer = (grid.get_num_layers() > 1) && inter_layer_connections_limited_to_opin(*rr_graph);
-        sub_threads_.resize(multi_queue_num_threads - 1);
-        thread_barrier_.init();
 
 #ifdef PROFILE_HEAP_OCCUPANCY
         heap_occ_profile_.open("occupancy.txt", std::ios::trunc);
 #endif
 
-        bool enable_thread_affinity = thread_affinity.size() > 0;
-        VTR_ASSERT((!enable_thread_affinity) || (static_cast<int>(thread_affinity.size()) == multi_queue_num_threads));
+    }
 
-        for (int i = 0 ; i < multi_queue_num_threads - 1; ++i) {
+    ~ParallelConnectionRouter() {
+        VTR_LOG("Parallel Connection Router is being destroyed. Time spent computing SSSP: %.3f seconds.\n", this->sssp_total_time.count() / 1000000.0);
+
+#ifdef PROFILE_HEAP_OCCUPANCY
+        heap_occ_profile_.close();
+#endif
+    }
+
+    void prepare_netlist_route() final {
+        is_router_destroying_ = false;
+        sub_threads_.resize(multi_queue_num_threads_ - 1);
+        thread_barrier_.init();
+
+        bool enable_thread_affinity = thread_affinity_.size() > 0;
+        VTR_ASSERT((!enable_thread_affinity) || (static_cast<int>(thread_affinity_.size()) == multi_queue_num_threads_));
+
+        for (int i = 0 ; i < multi_queue_num_threads_ - 1; ++i) {
             sub_threads_[i] = std::thread(&ParallelConnectionRouter::timing_driven_route_connection_from_heap_sub_thread_wrapper, this, i + 1 /*0: main thread*/);
             // Create a cpu_set_t object representing a set of CPUs. Clear it and mark only CPU i as set.
             if (enable_thread_affinity) {
                 cpu_set_t cpuset;
                 CPU_ZERO(&cpuset);
-                CPU_SET(thread_affinity[i + 1], &cpuset);
+                CPU_SET(thread_affinity_[i + 1], &cpuset);
                 int rc = pthread_setaffinity_np(sub_threads_[i].native_handle(),
                                                 sizeof(cpu_set_t), &cpuset);
                 if (rc != 0) {
@@ -181,7 +201,7 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         if (enable_thread_affinity) {
             cpu_set_t cpuset;
             CPU_ZERO(&cpuset);
-            CPU_SET(thread_affinity[0], &cpuset);
+            CPU_SET(thread_affinity_[0], &cpuset);
             int rc = pthread_setaffinity_np(pthread_self(),
                                             sizeof(cpu_set_t), &cpuset);
             if (rc != 0) {
@@ -190,15 +210,9 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         }
     }
 
-    ~ParallelConnectionRouter() {
+    void end_netlist_route() final {
         is_router_destroying_ = true;
         thread_barrier_.wait();
-
-        VTR_LOG("Parallel Connection Router is being destroyed. Time spent computing SSSP: %.3f seconds\n.", this->sssp_total_time.count() / 1000000.0);
-
-#ifdef PROFILE_HEAP_OCCUPANCY
-        heap_occ_profile_.close();
-#endif
     }
 
     // Clear's the modified list.  Should be called after reset_path_costs
@@ -465,6 +479,8 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
 #ifdef PROFILE_HEAP_OCCUPANCY
     std::ofstream heap_occ_profile_;
 #endif
+    int multi_queue_num_threads_;
+    std::vector<int> thread_affinity_;
 };
 
 #endif /* _PARALLEL_CONNECTION_ROUTER_H */

@@ -114,6 +114,10 @@ class ConnectionRouterInterface {
     //
     // Ensure route budgets have been calculated before enabling this
     virtual void set_rcv_enabled(bool enable) = 0;
+
+    virtual void prepare_netlist_route() {}
+
+    virtual void end_netlist_route() {}
 };
 
 #endif /* _CONNECTION_ROUTER_INTERFACE_H */

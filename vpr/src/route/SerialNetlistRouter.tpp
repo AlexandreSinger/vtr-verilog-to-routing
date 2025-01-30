@@ -72,6 +72,8 @@ inline RouteIterResults SerialNetlistRouter<HeapType>::route_netlist(int itry, f
         return _net_list.net_sinks(id1).size() > _net_list.net_sinks(id2).size();
     });
 
+    _parallel_router->prepare_netlist_route();
+
     for (size_t inet = 0; inet < sorted_nets.size(); inet++) {
         ParentNetId net_id = sorted_nets[inet];
 
@@ -102,7 +104,7 @@ inline RouteIterResults SerialNetlistRouter<HeapType>::route_netlist(int itry, f
         if (!flags.success && !flags.retry_with_full_bb) {
             /* Disconnected RRG and ConnectionRouter doesn't think growing the BB will work */
             out.is_routable = false;
-            return out;
+            break;
         }
 
         if (flags.retry_with_full_bb) {
@@ -119,6 +121,8 @@ inline RouteIterResults SerialNetlistRouter<HeapType>::route_netlist(int itry, f
 #endif
         }
     }
+
+    _parallel_router->end_netlist_route();
 
     return out;
 }
