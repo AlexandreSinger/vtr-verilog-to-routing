@@ -93,7 +93,6 @@ public:
 
     void init() {
         local_sense_ = false;
-        sense_ = false;
     }
 
     void wait() {
@@ -150,45 +149,32 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         , modified_rr_node_inf_(multi_queue_num_threads)
         , router_stats_(nullptr)
         , heap_(multi_queue_num_threads, multi_queue_num_queues)
-        , thread_barrier_(multi_queue_num_threads)
+        // , thread_barrier_(multi_queue_num_threads)
+        , spin_barrier_(multi_queue_num_threads)
+        , mutex_barrier_(multi_queue_num_threads)
         , is_router_destroying_(false)
         , locks_(rr_node_route_inf.size())
         , router_debug_(false)
-        , multi_queue_direct_draining_(multi_queue_direct_draining)
-        , multi_queue_num_threads_(multi_queue_num_threads)
-        , thread_affinity_(thread_affinity) {
+        , multi_queue_direct_draining_(multi_queue_direct_draining) {
         heap_.init_heap(grid);
         only_opin_inter_layer = (grid.get_num_layers() > 1) && inter_layer_connections_limited_to_opin(*rr_graph);
-
+        sub_threads_.resize(multi_queue_num_threads - 1);
+        spin_barrier_.init();
+        mutex_barrier_.init();
 #ifdef PROFILE_HEAP_OCCUPANCY
         heap_occ_profile_.open("occupancy.txt", std::ios::trunc);
 #endif
 
-    }
+        bool enable_thread_affinity = thread_affinity.size() > 0;
+        VTR_ASSERT((!enable_thread_affinity) || (static_cast<int>(thread_affinity.size()) == multi_queue_num_threads));
 
-    ~ParallelConnectionRouter() {
-        VTR_LOG("Parallel Connection Router is being destroyed. Time spent computing SSSP: %.3f seconds.\n", this->sssp_total_time.count() / 1000000.0);
-
-#ifdef PROFILE_HEAP_OCCUPANCY
-        heap_occ_profile_.close();
-#endif
-    }
-
-    void prepare_netlist_route() final {
-        is_router_destroying_ = false;
-        sub_threads_.resize(multi_queue_num_threads_ - 1);
-        thread_barrier_.init();
-
-        bool enable_thread_affinity = thread_affinity_.size() > 0;
-        VTR_ASSERT((!enable_thread_affinity) || (static_cast<int>(thread_affinity_.size()) == multi_queue_num_threads_));
-
-        for (int i = 0 ; i < multi_queue_num_threads_ - 1; ++i) {
+        for (int i = 0 ; i < multi_queue_num_threads - 1; ++i) {
             sub_threads_[i] = std::thread(&ParallelConnectionRouter::timing_driven_route_connection_from_heap_sub_thread_wrapper, this, i + 1 /*0: main thread*/);
             // Create a cpu_set_t object representing a set of CPUs. Clear it and mark only CPU i as set.
             if (enable_thread_affinity) {
                 cpu_set_t cpuset;
                 CPU_ZERO(&cpuset);
-                CPU_SET(thread_affinity_[i + 1], &cpuset);
+                CPU_SET(thread_affinity[i + 1], &cpuset);
                 int rc = pthread_setaffinity_np(sub_threads_[i].native_handle(),
                                                 sizeof(cpu_set_t), &cpuset);
                 if (rc != 0) {
@@ -201,18 +187,39 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         if (enable_thread_affinity) {
             cpu_set_t cpuset;
             CPU_ZERO(&cpuset);
-            CPU_SET(thread_affinity_[0], &cpuset);
+            CPU_SET(thread_affinity[0], &cpuset);
             int rc = pthread_setaffinity_np(pthread_self(),
                                             sizeof(cpu_set_t), &cpuset);
             if (rc != 0) {
                 VTR_LOG("Error calling pthread_setaffinity_np: %d\n", rc);
             }
         }
+
+        is_in_netlist_route_ = false;
+        spin_barrier_.wait();
+    }
+
+    ~ParallelConnectionRouter() {
+        is_router_destroying_ = true;
+        if (!is_in_netlist_route_)
+            mutex_barrier_.wait();
+        spin_barrier_.wait();
+
+        VTR_LOG("Parallel Connection Router is being destroyed. Time spent computing SSSP: %.3f seconds.\n", this->sssp_total_time.count() / 1000000.0);
+
+#ifdef PROFILE_HEAP_OCCUPANCY
+        heap_occ_profile_.close();
+#endif
+    }
+
+    void prepare_netlist_route() final {
+        is_in_netlist_route_ = true;
+        mutex_barrier_.wait();
     }
 
     void end_netlist_route() final {
-        is_router_destroying_ = true;
-        thread_barrier_.wait();
+        is_in_netlist_route_ = false;
+        spin_barrier_.wait();
     }
 
     // Clear's the modified list.  Should be called after reset_path_costs
@@ -458,7 +465,9 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
     const ConnectionParameters* conn_params_;
     ParallelPriorityQueue heap_;
     std::vector<std::thread> sub_threads_;
-    barrier_t thread_barrier_;
+    // barrier_t thread_barrier_;
+    barrier_spin_t spin_barrier_;
+    barrier_mutex_t mutex_barrier_;
     std::atomic<bool> is_router_destroying_;
     std::vector<spin_lock_t> locks_;
 
@@ -479,8 +488,7 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
 #ifdef PROFILE_HEAP_OCCUPANCY
     std::ofstream heap_occ_profile_;
 #endif
-    int multi_queue_num_threads_;
-    std::vector<int> thread_affinity_;
+    std::atomic<bool> is_in_netlist_route_ = false;
 };
 
 #endif /* _PARALLEL_CONNECTION_ROUTER_H */

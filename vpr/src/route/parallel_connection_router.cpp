@@ -342,9 +342,9 @@ void ParallelConnectionRouter::timing_driven_route_connection_from_heap(RRNodeId
     // Start measuring time before the barrier
     std::chrono::steady_clock::time_point begin_time = std::chrono::steady_clock::now();
 
-    thread_barrier_.wait();
+    spin_barrier_.wait();
     this->timing_driven_route_connection_from_heap_thread_func(*this->sink_node_, *this->cost_params_, *this->bounding_box_, 0);
-    thread_barrier_.wait();
+    spin_barrier_.wait();
 
     // Collect the number of heap pushes and pops
     router_stats_->heap_pushes += heap_.getNumPushes();
@@ -363,15 +363,19 @@ void ParallelConnectionRouter::timing_driven_route_connection_from_heap(RRNodeId
 }
 
 void ParallelConnectionRouter::timing_driven_route_connection_from_heap_sub_thread_wrapper(const size_t thread_idx) {
-    thread_barrier_.init();
+    spin_barrier_.init();
+    mutex_barrier_.init();
     while (true) {
-        thread_barrier_.wait();
+        spin_barrier_.wait();
         if (is_router_destroying_ == true) {
             return;
-        } else {
-            timing_driven_route_connection_from_heap_thread_func(*this->sink_node_, *this->cost_params_, *this->bounding_box_, thread_idx);
         }
-        thread_barrier_.wait();
+        if (is_in_netlist_route_ == false) {
+            mutex_barrier_.wait();
+            continue;
+        }
+        timing_driven_route_connection_from_heap_thread_func(*this->sink_node_, *this->cost_params_, *this->bounding_box_, thread_idx);
+        spin_barrier_.wait();
     }
 }
 
