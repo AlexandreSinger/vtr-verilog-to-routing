@@ -2,6 +2,7 @@
 #include <memory>
 
 #include "FlatPlacementInfo.h"
+#include "place_constraints.h"
 #include "place_macro.h"
 #include "vtr_assert.h"
 #include "vtr_log.h"
@@ -90,6 +91,9 @@ void try_place(const Netlist<>& net_list,
      */
     place_ctx.lock_loc_vars();
     place_ctx.compressed_block_grids = create_compressed_block_grids();
+
+    // Compute and store compressed floorplanning constraints.
+    alloc_and_load_compressed_cluster_constraints();
 
     /* Start measuring placement time. The measured execution time will be printed
      * when this object goes out of scope at the end of this function.

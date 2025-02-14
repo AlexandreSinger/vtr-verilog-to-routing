@@ -716,6 +716,11 @@ void vpr_load_packing(const t_vpr_setup& vpr_setup, const t_arch& arch) {
                                                              cluster_ctx.clb_nlist,
                                                              g_vpr_ctx.atom().nlist,
                                                              g_vpr_ctx.atom().lookup);
+
+    // Propogate the cluster constraints based on the macros.
+    // This goes through cluster blocks to calculate the tighest placement
+    // floorplan constraint for each constrained block.
+    propagate_place_constraints(*cluster_ctx.place_macros);
 }
 
 bool vpr_load_flat_placement(t_vpr_setup& vpr_setup, const t_arch& arch) {
