@@ -860,7 +860,8 @@ void vpr_load_placement(t_vpr_setup& vpr_setup) {
     const auto& filename_opts = vpr_setup.FileNameOpts;
 
     //Initialize placement data structures, which will be filled when loading placement
-    init_placement_context(blk_loc_registry);
+    // init_placement_context(blk_loc_registry, vpr_setup.PlacerOpts.constraints_file.c_str());
+    init_blk_loc_registry(blk_loc_registry);
 
     //Load an existing placement from a file
     place_ctx.placement_id = read_place(filename_opts.NetFile.c_str(), filename_opts.PlaceFile.c_str(),

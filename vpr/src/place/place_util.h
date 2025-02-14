@@ -196,6 +196,8 @@ class t_placer_statistics {
     void single_swap_update(const t_placer_costs& costs);
 };
 
+void init_blk_loc_registry(BlkLocRegistry& blk_loc_registry);
+
 /**
  * @brief Initialize the placer's block-grid dual direction mapping.
  *
@@ -204,8 +206,10 @@ class t_placer_statistics {
  * Allocates and load placement macros.
  *
  * Initialize both of them to empty states.
+ * FIXME: Update this comment. It also marks fixed blocks.
  */
-void init_placement_context(BlkLocRegistry& blk_loc_registry);
+void init_placement_context(BlkLocRegistry& blk_loc_registry,
+                            const char* constraints_file);
 
 /**
  * @brief Get the initial limit for inner loop block move attempt limit.

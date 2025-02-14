@@ -129,30 +129,20 @@ public:
      * Initializes internal and global state necessary to place clusters on the
      * FPGA device.
      */
-    APClusterPlacer(const PlaceMacros& place_macros)
+    APClusterPlacer(const PlaceMacros& place_macros, const char* constraints_file)
                 : place_macros_(place_macros) {
         // FIXME: This was stolen from place/place.cpp
         //        it used a static method, just taking what I think I will need.
         auto& blk_loc_registry = g_vpr_ctx.mutable_placement().mutable_blk_loc_registry();
 
-        init_placement_context(blk_loc_registry);
+        init_placement_context(blk_loc_registry, constraints_file);
 
+        // FIXME: This code is actually shared with pack.cpp; should be moved to
+        //        common file.
         // stolen from place/place.cpp:alloc_and_load_try_swap_structs
         // FIXME: set cube_bb to false by hand, should be passed in.
         g_vpr_ctx.mutable_placement().cube_bb = false;
         g_vpr_ctx.mutable_placement().compressed_block_grids = create_compressed_block_grids();
-
-        // TODO: The next few steps will be basically a direct copy of the initial
-        //       placement code since it does everything we need! It would be nice
-        //       to share the code.
-
-        // Clear the grid locations (stolen from initial_placement)
-        blk_loc_registry.clear_all_grid_locs();
-
-        // Deal with the placement constraints.
-        propagate_place_constraints(place_macros_);
-
-        mark_fixed_blocks(blk_loc_registry);
 
         alloc_and_load_compressed_cluster_constraints();
     }
@@ -375,13 +365,6 @@ void NaiveFullLegalizer::create_clusters(const PartialPlacement& p_placement) {
     // FIXME: This writing and loading from a file is wasteful. Should generate
     //        the clusters directly from the cluster legalizer.
     vpr_load_packing(vpr_setup_, arch_);
-    load_cluster_constraints();
-    const ClusteredNetlist& clb_nlist = g_vpr_ctx.clustering().clb_nlist;
-
-    // Verify the packing and print some info
-    check_netlist(vpr_setup_.PackerOpts.pack_verbosity);
-    writeClusteredNetlistStats(vpr_setup_.FileNameOpts.write_block_usage);
-    print_pb_type_count(clb_nlist);
 }
 
 void NaiveFullLegalizer::place_clusters(const ClusteredNetlist& clb_nlist,
@@ -407,7 +390,7 @@ void NaiveFullLegalizer::place_clusters(const ClusteredNetlist& clb_nlist,
     // Move the clusters to where they want to be first.
     // TODO: The fixed clusters should probably be moved first for legality
     //       reasons.
-    APClusterPlacer ap_cluster_placer(place_macros);
+    APClusterPlacer ap_cluster_placer(place_macros, vpr_setup_.PlacerOpts.constraints_file.c_str());
     std::vector<ClusterBlockId> unplaced_clusters;
     for (ClusterBlockId cluster_blk_id : clb_nlist.blocks()) {
         // Assume that the cluster will always want to be placed wherever the

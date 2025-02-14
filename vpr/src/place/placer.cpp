@@ -48,7 +48,8 @@ Placer::Placer(const Netlist<>& net_list,
 
     pre_place_timing_stats_ = g_vpr_ctx.timing().stats;
 
-    init_placement_context(placer_state_.mutable_blk_loc_registry());
+    init_placement_context(placer_state_.mutable_blk_loc_registry(),
+                           placer_opts.constraints_file.c_str());
 
     // create a NoC cost handler if NoC optimization is enabled
     if (noc_opts.noc) {

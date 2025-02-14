@@ -1251,24 +1251,6 @@ void initial_placement(const t_placer_opts& placer_opts,
                        vtr::RngContainer& rng) {
     vtr::ScopedStartFinishTimer timer("Initial Placement");
 
-    // FIXME: Move the following 3 function calls out of initial placement.
-    //        They have nothing to do with initial placement exactly, they are
-    //        more about locking down clusters which are fixed.
-    //      - Move to init_placement_context; then move that into blk_loc_registry
-    /* Initialize the grid blocks to empty.
-     * Initialize all the blocks to unplaced.
-     */
-    blk_loc_registry.clear_all_grid_locs();
-
-    /*Mark the blocks that have already been locked to one spot via floorplan constraints
-     * as fixed, so they do not get moved during initial placement or later during the simulated annealing stage of placement*/
-    mark_fixed_blocks(blk_loc_registry);
-
-    // read the constraint file and place fixed blocks
-    if (strlen(constraints_file) != 0) {
-        read_constraints(constraints_file, blk_loc_registry);
-    }
-
     if(!placer_opts.read_initial_place_file.empty()) {
         const auto& grid = g_vpr_ctx.device().grid;
         read_place(nullptr, placer_opts.read_initial_place_file.c_str(), blk_loc_registry, false, grid);

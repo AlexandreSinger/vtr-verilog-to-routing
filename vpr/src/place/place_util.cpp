@@ -5,11 +5,13 @@
  */
 
 #include "place_util.h"
+#include "blk_loc_registry.h"
 #include "globals.h"
 #include "draw_global.h"
 #include "physical_types_util.h"
 #include "place_constraints.h"
 #include "noc_place_utils.h"
+#include "read_place.h"
 
 /**
  * @brief Initialize `grid_blocks`, the inverse structure of `block_locs`.
@@ -19,7 +21,8 @@
  */
 static GridBlock init_grid_blocks();
 
-void init_placement_context(BlkLocRegistry& blk_loc_registry) {
+// FIXME: Move this to the BlkLocRegistry class.
+void init_blk_loc_registry(BlkLocRegistry& blk_loc_registry) {
     auto& cluster_ctx = g_vpr_ctx.clustering();
 
     auto& block_locs = blk_loc_registry.mutable_block_locs();
@@ -31,6 +34,26 @@ void init_placement_context(BlkLocRegistry& blk_loc_registry) {
 
     /* Initialize the reverse lookup of CLB block positions */
     grid_blocks = init_grid_blocks();
+
+    /* Initialize the grid blocks to empty.
+     * Initialize all the blocks to unplaced.
+     */
+    blk_loc_registry.clear_all_grid_locs();
+}
+
+void init_placement_context(BlkLocRegistry& blk_loc_registry,
+                            const char* constraints_file) {
+
+    init_blk_loc_registry(blk_loc_registry);
+
+    /*Mark the blocks that have already been locked to one spot via floorplan constraints
+     * as fixed, so they do not get moved during initial placement or later during the simulated annealing stage of placement*/
+    mark_fixed_blocks(blk_loc_registry);
+
+    // read the constraint file and place fixed blocks
+    if (strlen(constraints_file) != 0) {
+        read_constraints(constraints_file, blk_loc_registry);
+    }
 }
 
 static GridBlock init_grid_blocks() {
