@@ -1761,6 +1761,8 @@ struct t_rr_node_route_inf {
     float acc_cost;
     float path_cost;
     float backward_path_cost;
+    // The max total cost of the path to the previous node.
+    float max_prev_total_cost;
     float R_upstream; // TODO: Investigate the effect of adding the R_upstream field in
                       //       this struct. It is put in for the fine-grained parallel
                       //       router's benefits. It is increasing the working set, which

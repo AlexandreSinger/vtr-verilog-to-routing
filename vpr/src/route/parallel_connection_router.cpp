@@ -1,13 +1,17 @@
 #include "parallel_connection_router.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <tuple>
+#include <type_traits>
 #include "router_lookahead.h"
 #include "rr_graph.h"
 
 #include "binary_heap.h"
 #include "bucket.h"
 #include "rr_graph_fwd.h"
+#include "vtr_math.h"
 
 // #define NON_DETERMINISTIC_PRUNING
 
@@ -196,8 +200,34 @@ std::tuple<bool, bool, t_heap> ParallelConnectionRouter::timing_driven_route_con
     return std::make_tuple(true, retry_with_full_bb, out);
 }
 
+static inline bool is_fp_equal(float a, float b) {
+    // If one is infinity while the other is not, then they are not equal
+    if (std::isinf(a) ^ std::isinf(b))
+        return false;
+    if (std::isinf(a) && std::isinf(b))
+        return true;
+    return a == b;
+    // return vtr::isclose<float>(a, b, 1e-9, 0.f);
+    // return std::abs(a - b) < (a * 0.001);
+}
+
+static inline float get_max_curr_total_cost(float max_prev_total_cost, float new_total_cost) {
+    if (std::isinf(max_prev_total_cost) || std::isinf(new_total_cost))
+        return std::numeric_limits<float>::infinity();
+    if (max_prev_total_cost == 0.f)
+        return new_total_cost;
+    if (is_fp_equal(new_total_cost, max_prev_total_cost))
+        return max_prev_total_cost;
+    // VTR_ASSERT(!vtr::isclose(max_prev_total_cost, new_total_cost));
+    if (max_prev_total_cost < new_total_cost)
+        return new_total_cost;
+    return max_prev_total_cost;
+}
+
 static inline bool post_target_prune_node(float new_total_cost,
                                           float new_back_cost,
+                                          float max_prev_total_cost,
+                                          float best_max_total_cost_to_target,
                                           float best_back_cost_to_target,
                                           const t_conn_cost_params& params) {
     // Divide out the astar_fac, then multiply to get determinism
@@ -220,10 +250,58 @@ static inline bool post_target_prune_node(float new_total_cost,
     // Max function to prevent the heuristic from going negative
     new_expected_cost = std::max(0.f, new_expected_cost);
     new_expected_cost *= params.post_target_prune_fac;
+
+    // NEW
+    if (std::isinf(best_max_total_cost_to_target))
+        return false;
+    // float cur_max_total_cost = std::max(max_prev_total_cost, new_back_cost + new_expected_cost);
+    float cur_max_total_cost = get_max_curr_total_cost(max_prev_total_cost, new_total_cost);
+    if (vtr::isclose(cur_max_total_cost, best_max_total_cost_to_target))
+        return false;
+    // float cur_max_total_cost = max_prev_total_cost;
+    // if (cur_max_total_cost > best_max_total_cost_to_target)
+    //     return true;
+
+    // If the current overestimation is larger than the max overestimation to the
+    // target, then this path is not going anywhere.
+    float max_overestimation = best_max_total_cost_to_target - best_back_cost_to_target;
+    float current_overestimation = new_total_cost - best_back_cost_to_target;
+    if (current_overestimation > max_overestimation)
+        return true;
+
+    //OLD
+    /*
     if ((new_back_cost + new_expected_cost) > best_back_cost_to_target)
         return true;
+    */
     // NOTE: we do NOT check for equality here. Equality does not matter for
     //       determinism when draining the queues (may just lead to a bit more work).
+    return false;
+}
+
+static inline bool tie_break_prune(RREdgeId new_prev_edge, RREdgeId best_prev_edge) {
+    // With deterministic pruning, cannot always prune on ties.
+    // In the case of a true tie, just prune, no need to explore neightbors
+    if (new_prev_edge == best_prev_edge)
+        return true;
+    // When it comes to invalid edge IDs, in the case of a tied back cost,
+    // always try to keep the invalid edge ID (likely the start node).
+    // TODO: Verify this.
+    // If the best previous edge is invalid, prune
+    if (!best_prev_edge.is_valid())
+        return true;
+    // If the new previous edge is invalid (assuming the best is not), accept
+    if (!new_prev_edge.is_valid())
+        return false;
+    // Finally, if this node is not coming from a preferred edge, prune
+    // Deterministic version prefers a given EdgeID, so a unique path is returned since,
+    // in the case of a tie, a determinstic path wins.
+    // Is first preferred over second?
+    auto is_preferred_edge = [](RREdgeId first, RREdgeId second) {
+        return first < second;
+    };
+    if (!is_preferred_edge(new_prev_edge, best_prev_edge))
+        return true;
     return false;
 }
 
@@ -231,6 +309,7 @@ static inline bool post_target_prune_node(float new_total_cost,
 static inline bool prune_node(RRNodeId inode,
                               float new_total_cost,
                               float new_back_cost,
+                              float max_prev_total_cost,
                               RREdgeId new_prev_edge,
                               RRNodeId target_node,
                               vtr::vector<RRNodeId, t_rr_node_route_inf>& rr_node_route_inf_,
@@ -240,10 +319,139 @@ static inline bool prune_node(RRNodeId inode,
     if (inode != target_node) {
         t_rr_node_route_inf* target_route_inf = &rr_node_route_inf_[target_node];
         float best_back_cost_to_target = target_route_inf->backward_path_cost;
-        if (post_target_prune_node(new_total_cost, new_back_cost, best_back_cost_to_target, params))
+        float best_max_total_cost_to_target = get_max_curr_total_cost(target_route_inf->max_prev_total_cost, best_back_cost_to_target);
+        // float best_max_total_cost_to_target = std::max(target_route_inf->max_prev_total_cost, target_route_inf->path_cost);
+        // float best_max_total_cost_to_target = target_route_inf->max_prev_total_cost;
+        if (post_target_prune_node(new_total_cost,
+                                   new_back_cost,
+                                   max_prev_total_cost,
+                                   best_max_total_cost_to_target,
+                                   best_back_cost_to_target,
+                                   params))
             return true;
     }
 
+    // Backwards Pruning
+    // NOTE: When going to the target, we only want to prune on the truth.
+    //       The queues handle using the heuristic to explore nodes faster.
+    t_rr_node_route_inf* route_inf = &rr_node_route_inf_[inode];
+    float best_total_cost = route_inf->path_cost;
+    float best_back_cost = route_inf->backward_path_cost;
+    float best_max_prev_total_cost = route_inf->max_prev_total_cost;
+    float best_max_curr_total_cost = get_max_curr_total_cost(best_max_prev_total_cost, best_total_cost);
+    float max_curr_total_cost = get_max_curr_total_cost(max_prev_total_cost, new_total_cost);
+
+    // The same node is coming back. It must be updating its costs...
+    // This may happen if an upstream node increases its Max Total Cost, which
+    // needs to propagate down the path.
+    if (new_prev_edge == route_inf->prev_edge) {
+        return false;
+    }
+
+    /*
+    if (new_prev_edge == route_inf->prev_edge) {
+        // EUREKA! The anomaly! Somehow we are trying to update the optimal path
+        // with a worst solution! This indicates that the issue has something to
+        // do with this.
+        VTR_LOG("%e, %e, n(%zu, %zu), e(%zu, %zu), %d, %d\n",
+                max_curr_total_cost,
+                best_max_curr_total_cost,
+                inode,
+                target_node,
+                new_prev_edge,
+                route_inf->prev_edge,
+                max_curr_total_cost <= best_max_curr_total_cost,
+                max_curr_total_cost == best_max_curr_total_cost ? new_back_cost <= best_back_cost : 1);
+        VTR_ASSERT(max_curr_total_cost <= best_max_curr_total_cost);
+        if (max_curr_total_cost == best_max_curr_total_cost) {
+            VTR_ASSERT(new_back_cost <= best_back_cost);
+        }
+    }
+    */
+
+    if (is_fp_equal(max_curr_total_cost, best_max_curr_total_cost)) {
+        if (is_fp_equal(new_back_cost, best_back_cost)) {
+            return tie_break_prune(new_prev_edge, route_inf->prev_edge);
+        }
+        // VTR_ASSERT(!vtr::isclose(new_back_cost, best_back_cost));
+        if (new_back_cost > best_back_cost)
+            return true;
+        // FIXME: Try removing this.
+        return false;
+    }
+    // VTR_LOG("%f, %f\n", max_curr_total_cost, best_max_curr_total_cost);
+    // if (!std::isinf(max_curr_total_cost) && !std::isinf(best_max_curr_total_cost))
+    //     VTR_ASSERT(!vtr::isclose<float>(max_curr_total_cost, best_max_curr_total_cost));
+    /*
+    if (is_fp_equal(new_total_cost, best_total_cost) && is_fp_equal(max_curr_total_cost, best_max_curr_total_cost)) {
+        return tie_break_prune(new_prev_edge, route_inf->prev_edge);
+    }
+    if (new_total_cost < best_total_cost && is_fp_equal(max_curr_total_cost, best_max_curr_total_cost)) {
+        if (max_prev_total_cost > best_max_prev_total_cost)
+            return false;
+        return false;
+    }
+    if (new_total_cost > best_total_cost && is_fp_equal(max_curr_total_cost, best_max_curr_total_cost)) {
+        if (max_prev_total_cost < best_max_prev_total_cost)
+            return true;
+        return true;
+    }
+    */
+
+    if (max_curr_total_cost > best_max_curr_total_cost)
+        return true;
+    return false;
+    /*
+    if (new_total_cost < best_total_cost && max_curr_total_cost < best_max_curr_total_cost)
+        return false;
+    if (is_fp_equal(new_total_cost, best_total_cost) && max_curr_total_cost < best_max_curr_total_cost)
+        return false;
+    if (new_total_cost > best_total_cost && max_curr_total_cost < best_max_curr_total_cost) {
+        if (max_prev_total_cost > best_max_prev_total_cost)
+            return false;
+        return false;
+    }
+    */
+
+
+    // The root of our problem may be that we cannot have the total cost go up,
+    // but we need 
+    if (is_fp_equal(new_total_cost, best_total_cost) && max_curr_total_cost > best_max_curr_total_cost)
+        return true;
+    if (new_total_cost < best_total_cost && max_curr_total_cost > best_max_curr_total_cost) {
+        return true;
+    }
+    if (new_total_cost > best_total_cost && max_curr_total_cost > best_max_curr_total_cost) {
+        return true;
+    }
+
+    return false;
+
+    // Path is going to make the max total cost worst.
+    if (max_curr_total_cost > best_max_curr_total_cost)
+        return true;
+    // Path is not going to make the max total cost worst, but is a worst quality path.
+    if (max_curr_total_cost == best_max_curr_total_cost &&
+            new_total_cost > best_total_cost)
+        return true;
+    // In the case of a tie, need to be picky about whether to prune or not in
+    // order to get determinism.
+    // FIXME: This may not be thread safe. If the best node changes while this
+    //        function is being called, we may have the new_back_cost and best
+    //        prev_edge's being from different heap nodes!
+    // TODO: Move this to within the lock (the rest can stay for performance).
+    if (max_curr_total_cost == best_max_curr_total_cost && new_total_cost == best_total_cost) {
+#ifndef NON_DETERMINISTIC_PRUNING
+        return tie_break_prune(new_prev_edge, route_inf->prev_edge);
+#else
+        std::ignore = new_prev_edge;
+        // When we do not care about determinism, always prune on equality.
+        return true;
+#endif
+    }
+
+    // OLD
+    /*
     // Backwards Pruning
     // NOTE: When going to the target, we only want to prune on the truth.
     //       The queues handle using the heuristic to explore nodes faster.
@@ -288,6 +496,7 @@ static inline bool prune_node(RRNodeId inode,
         return true;
 #endif
     }
+    */
 
     // If all above passes, do not prune.
     return false;
@@ -296,6 +505,7 @@ static inline bool prune_node(RRNodeId inode,
 static inline bool should_not_explore_neighbors(RRNodeId inode,
                                 float new_total_cost,
                                 float new_back_cost,
+                                float max_prev_total_cost,
                                 RRNodeId target_node,
                                 vtr::vector<RRNodeId, t_rr_node_route_inf>& rr_node_route_inf_,
                                 const t_conn_cost_params& params) {
@@ -306,13 +516,15 @@ static inline bool should_not_explore_neighbors(RRNodeId inode,
     // just check for equality. There is a chance this may cause some duplicates
     // for the deterministic case, but thats ok they will be handled.
     // TODO: Maybe consider having the non-deterministic version do this too.
-    if (new_total_cost != rr_node_route_inf_[inode].path_cost)
+    // if (new_total_cost != rr_node_route_inf_[inode].path_cost)
+    //     return true;
+    if (!vtr::isclose(new_total_cost, rr_node_route_inf_[inode].path_cost))
         return true;
 #else
     // For non-deterministic pruning, can greadily just ignore nodes with higher
     // total cost.
-    if (new_total_cost > rr_node_route_inf_[inode].path_cost)
-        return true;
+    // if (new_total_cost > rr_node_route_inf_[inode].path_cost)
+    //     return true;
 #endif
     // Perform post-target pruning. If this is not done, there is a chance that
     // several duplicates of a node is in the queue that will never reach the
@@ -321,7 +533,15 @@ static inline bool should_not_explore_neighbors(RRNodeId inode,
     // prevent lock contention where possible.
     if (inode != target_node) {
         float best_back_cost_to_target = rr_node_route_inf_[target_node].backward_path_cost;
-        if (post_target_prune_node(new_total_cost, new_back_cost, best_back_cost_to_target, params))
+        float best_max_total_cost_to_target = get_max_curr_total_cost(rr_node_route_inf_[target_node].max_prev_total_cost, best_back_cost_to_target);
+        // float best_max_total_cost_to_target = std::max(rr_node_route_inf_[target_node].max_prev_total_cost, rr_node_route_inf_[target_node].path_cost);
+        // float best_max_total_cost_to_target = rr_node_route_inf_[target_node].max_prev_total_cost;
+        if (post_target_prune_node(new_total_cost,
+                                   new_back_cost,
+                                   max_prev_total_cost,
+                                   best_max_total_cost_to_target,
+                                   best_back_cost_to_target,
+                                   params))
             return true;
     }
     return false;
@@ -405,18 +625,30 @@ void ParallelConnectionRouter::timing_driven_route_connection_from_heap_thread_f
 
         // Should we explore the neighbors of this node?
 
-        if (should_not_explore_neighbors(inode, new_total_cost, rr_node_route_inf_[inode].backward_path_cost, sink_node, rr_node_route_inf_, cost_params)) {
+        // FIXME: Not sure if this is the problem. Commenting out for now. Maybe bring back.
+        /*
+        if (should_not_explore_neighbors(inode,
+                                         new_total_cost,
+                                         rr_node_route_inf_[inode].backward_path_cost,
+                                         rr_node_route_inf_[inode].max_prev_total_cost,
+                                         sink_node,
+                                         rr_node_route_inf_,
+                                         cost_params)) {
             continue;
         }
+        */
 
         obtainSpinLock(inode);
 
         node_t cheapest;
         cheapest.backward_path_cost = rr_node_route_inf_[inode].backward_path_cost;
+        // FIXME: This may not have to be here. Since we ensure this is equal
+        //        to new_total_cost we can bring it out of the lock.
+        cheapest.total_cost = rr_node_route_inf_[inode].path_cost;
+        cheapest.max_prev_total_cost = rr_node_route_inf_[inode].max_prev_total_cost;
         cheapest.R_upstream = rr_node_route_inf_[inode].R_upstream;
         cheapest.prev_edge = rr_node_route_inf_[inode].prev_edge;
 
-        releaseLock(inode);
 
         // Double check now just to be sure that we should still explore neighbors
         // NOTE: A good question is what happened to the uniqueness pruning. The idea
@@ -427,11 +659,21 @@ void ParallelConnectionRouter::timing_driven_route_connection_from_heap_thread_f
         // TODO: This is still doing post-target pruning. May want to investigate
         //       if this is worth doing.
         // TODO: should try testing without the pruning below and see if anything changes.
-        if (should_not_explore_neighbors(inode, new_total_cost, cheapest.backward_path_cost, sink_node, rr_node_route_inf_, cost_params)) {
+        if (should_not_explore_neighbors(inode,
+                                         new_total_cost,
+                                         cheapest.backward_path_cost,
+                                         cheapest.max_prev_total_cost,
+                                         sink_node,
+                                         rr_node_route_inf_,
+                                         cost_params)) {
+            releaseLock(inode);
             continue;
         }
+        // FIXME: Move this back.
+        releaseLock(inode);
 
         // Adding nodes to heap
+        // cheapest.total_cost = new_total_cost;
         timing_driven_expand_neighbours(cheapest, inode, cost_params, bounding_box, sink_node, thread_idx);
 
     }
@@ -612,15 +854,37 @@ void ParallelConnectionRouter::timing_driven_add_to_heap(const t_conn_cost_param
                                       from_edge,
                                       target_node);
 
+    next.max_prev_total_cost = get_max_curr_total_cost(current.max_prev_total_cost, current.total_cost);
+
+    if (to_node == target_node)
+        next.total_cost = next.backward_path_cost;
     float new_total_cost = next.total_cost;
     float new_back_cost = next.backward_path_cost;
+    float new_max_prev_total_cost = next.max_prev_total_cost;
 
-    if (prune_node(to_node, new_total_cost, new_back_cost, from_edge, target_node, rr_node_route_inf_, cost_params))
+    // FIXME: Bring this back...
+    /*
+    if (prune_node(to_node,
+                   new_total_cost,
+                   new_back_cost,
+                   next.max_prev_total_cost,
+                   from_edge,
+                   target_node,
+                   rr_node_route_inf_,
+                   cost_params))
         return;
+        */
 
     obtainSpinLock(to_node);
 
-    if (prune_node(to_node, new_total_cost, new_back_cost, from_edge, target_node, rr_node_route_inf_, cost_params)) {
+    if (prune_node(to_node,
+                   new_total_cost,
+                   new_back_cost,
+                   new_max_prev_total_cost,
+                   from_edge,
+                   target_node,
+                   rr_node_route_inf_,
+                   cost_params)) {
         releaseLock(to_node);
         return;
     }
@@ -630,11 +894,6 @@ void ParallelConnectionRouter::timing_driven_add_to_heap(const t_conn_cost_param
     releaseLock(to_node);
 
     if (to_node == target_node) {
-#ifdef MQ_IO_ENABLE_CLEAR_FOR_POP
-        if (multi_queue_direct_draining_) {
-            heap_.setMinPrioForPop(new_total_cost);
-        }
-#endif
         return ;
     }
     heap_.add_to_heap(new_total_cost, to_node);
@@ -903,12 +1162,22 @@ void ParallelConnectionRouter::add_route_tree_node_to_heap(
                        describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, inode, is_flat_).c_str());
 
 
-        if (prune_node(inode, tot_cost, backward_path_cost, RREdgeId::INVALID(), target_node, rr_node_route_inf_, cost_params))
+        /*
+        if (prune_node(inode,
+                       tot_cost,
+                       backward_path_cost,
+                       0.f,
+                       RREdgeId::INVALID(),
+                       target_node,
+                       rr_node_route_inf_,
+                       cost_params))
             return ;
+            */
         add_to_mod_list(inode, 0/*main thread*/);
         rr_node_route_inf_[inode].path_cost = tot_cost;
         rr_node_route_inf_[inode].prev_edge = RREdgeId::INVALID();
         rr_node_route_inf_[inode].backward_path_cost = backward_path_cost;
+        rr_node_route_inf_[inode].max_prev_total_cost = 0.f;
         rr_node_route_inf_[inode].R_upstream = R_upstream;
         heap_.push_back(tot_cost, inode);
 

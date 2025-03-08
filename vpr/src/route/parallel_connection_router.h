@@ -2,6 +2,7 @@
 #define _PARALLEL_CONNECTION_ROUTER_H
 
 #include <chrono>
+#include <limits>
 #include "connection_router_interface.h"
 #include "rr_graph_storage.h"
 #include "route_common.h"
@@ -74,6 +75,7 @@ public:
 struct node_t {
     float total_cost;
     float backward_path_cost;
+    float max_prev_total_cost;
     float R_upstream;
     RREdgeId prev_edge;
 };
@@ -218,6 +220,7 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
             for (const auto node : thread_visited_rr_nodes) {
                 route_ctx.rr_node_route_inf[node].path_cost = std::numeric_limits<float>::infinity();
                 route_ctx.rr_node_route_inf[node].backward_path_cost = std::numeric_limits<float>::infinity();
+                route_ctx.rr_node_route_inf[node].max_prev_total_cost = std::numeric_limits<float>::infinity();
                 route_ctx.rr_node_route_inf[node].prev_edge = RREdgeId::INVALID();
             }
         }
@@ -310,6 +313,7 @@ class ParallelConnectionRouter : public ConnectionRouterInterface {
         route_inf->prev_edge = cheapest.prev_edge;
         route_inf->path_cost = cheapest.total_cost;
         route_inf->backward_path_cost = cheapest.backward_path_cost;
+        route_inf->max_prev_total_cost = cheapest.max_prev_total_cost;
     }
 
     inline void obtainSpinLock(RRNodeId inode) {

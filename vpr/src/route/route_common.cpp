@@ -5,6 +5,7 @@
 #include "draw_global.h"
 #include "place_and_route.h"
 #include "route_common.h"
+#include <limits>
 #include "route_export.h"
 #include "rr_graph.h"
 #include "re_cluster_util.h"
@@ -289,6 +290,7 @@ void reset_path_costs(const std::vector<RRNodeId>& visited_rr_nodes) {
     for (auto node : visited_rr_nodes) {
         route_ctx.rr_node_route_inf[node].path_cost = std::numeric_limits<float>::infinity();
         route_ctx.rr_node_route_inf[node].backward_path_cost = std::numeric_limits<float>::infinity();
+        route_ctx.rr_node_route_inf[node].max_prev_total_cost = std::numeric_limits<float>::infinity();
         route_ctx.rr_node_route_inf[node].prev_edge = RREdgeId::INVALID();
     }
 }
@@ -426,6 +428,7 @@ void reset_rr_node_route_structs() {
         node_inf.acc_cost = 1.0;
         node_inf.path_cost = std::numeric_limits<float>::infinity();
         node_inf.backward_path_cost = std::numeric_limits<float>::infinity();
+        node_inf.max_prev_total_cost = std::numeric_limits<float>::infinity();
         node_inf.set_occ(0);
     }
 }
