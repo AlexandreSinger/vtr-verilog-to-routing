@@ -1124,6 +1124,7 @@ static float get_molecule_gain(PackMoleculeId molecule_id,
         } else {
             gain_mult = 1.0f / std::sqrt(dist - appack_options.sqrt_offset);
         }
+        VTR_ASSERT_SAFE(gain_mult >= 0.0f && gain_mult <= 1.0f);
 
         // Update the gain.
         gain *= gain_mult;

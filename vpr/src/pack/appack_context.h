@@ -33,12 +33,21 @@ struct t_appack_options {
         // distance on the device (from the bottom corner to the top corner).
         // We also use an offset for the minimum this distance can be to prevent
         // small devices from finding candidates.
+        // FIXME: This needs to be investigated. It seems that RAMs need their
+        //        own max distance (or they need to ignore this). How can we do
+        //        that?
         float max_candidate_distance_scale = 0.5f;
-        float max_candidate_distance_offset = 20.f;
+        float max_candidate_distance_offset = 1.f;
         // Longest L1 distance on the device.
         float longest_distance = device_grid.width() + device_grid.height();
         max_candidate_distance = std::max(max_candidate_distance_scale * longest_distance,
                                           max_candidate_distance_offset);
+
+        //dist_th = longest_distance * 0.065;
+        dist_th = 2.25;
+        constexpr float h = 0.25;
+        sqrt_offset = dist_th - ((1.0f / h) * (1.0f / h));
+        quad_fac = std::sqrt((1.0f - h) / (dist_th * dist_th));
     }
 
     // Whether to use APPack or not.
@@ -53,7 +62,7 @@ struct t_appack_options {
         CENTROID, /**< The location of the cluster is the centroid of the molecules which have been packed into it. */
         SEED      /**< The location of the cluster is the location of the first molecule packed into it. */
     };
-    static constexpr e_cl_loc_ty cluster_location_ty = e_cl_loc_ty::CENTROID;
+    static constexpr e_cl_loc_ty cluster_location_ty = e_cl_loc_ty::SEED;
 
     // =========== Candidate gain attenuation ============================== //
     // These terms are used to update the gain of a given candidate based on
@@ -67,11 +76,19 @@ struct t_appack_options {
     // Distance threshold which decides when to use quadratic decay or inverted
     // sqrt decay. If the distance is less than this threshold, quadratic decay
     // is used. Inverted sqrt is used otherwise.
-    static constexpr float dist_th = 2.0f;
+    // static constexpr float dist_th = 1.0f;
+    // static constexpr float h = 0.36;
+    // static constexpr float h = 0.4f;
     // Horizontal offset to the inverted sqrt decay.
-    static constexpr float sqrt_offset = -6.1f;
+    // static constexpr float sqrt_offset = -6.1f;
+    // static constexpr float sqrt_offset = dist_th - ((1.0f / h) * (1.0f / h));
     // Scaling factor for the quadratic decay term.
-    static constexpr float quad_fac = 0.4f;
+    // static constexpr float quad_fac = 0.4f;
+    // float quad_fac = std::sqrt((1.0f - h) / (dist_th * dist_th));
+    //
+    float dist_th;
+    float sqrt_offset;
+    float quad_fac;
 
     // =========== Candidate selection distance ============================ //
     // When selecting candidates, what distance from the cluster will we
