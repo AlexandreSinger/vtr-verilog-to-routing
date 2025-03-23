@@ -12,7 +12,9 @@
 #include <limits>
 #include "device_grid.h"
 #include "flat_placement_types.h"
+#include "physical_types.h"
 #include "vpr_context.h"
+#include "vpr_utils.h"
 
 /**
  * @brief Configuration options for APPack.
@@ -36,18 +38,24 @@ struct t_appack_options {
         // FIXME: This needs to be investigated. It seems that RAMs need their
         //        own max distance (or they need to ignore this). How can we do
         //        that?
-        float max_candidate_distance_scale = 0.5f;
-        float max_candidate_distance_offset = 1.f;
+        float max_candidate_distance_scale = 0.1f;
+        float max_candidate_distance_offset = 15.0f;
         // Longest L1 distance on the device.
         float longest_distance = device_grid.width() + device_grid.height();
         max_candidate_distance = std::max(max_candidate_distance_scale * longest_distance,
                                           max_candidate_distance_offset);
 
         //dist_th = longest_distance * 0.065;
-        dist_th = 2.25;
-        constexpr float h = 0.25;
+        dist_th = 1.75;
+        constexpr float h = 0.35;
         sqrt_offset = dist_th - ((1.0f / h) * (1.0f / h));
         quad_fac = std::sqrt((1.0f - h) / (dist_th * dist_th));
+
+        t_logical_block_type_ptr logic_block_type = infer_logic_block_type(device_grid);
+        // FIXME: This can happen it we cannot identify a logical block type.
+        //        Make this just skip max cluster distance probably.
+        VTR_ASSERT(logic_block_type != nullptr);
+        logic_block_type_index = logic_block_type->index;
     }
 
     // Whether to use APPack or not.
@@ -62,7 +70,7 @@ struct t_appack_options {
         CENTROID, /**< The location of the cluster is the centroid of the molecules which have been packed into it. */
         SEED      /**< The location of the cluster is the location of the first molecule packed into it. */
     };
-    static constexpr e_cl_loc_ty cluster_location_ty = e_cl_loc_ty::SEED;
+    static constexpr e_cl_loc_ty cluster_location_ty = e_cl_loc_ty::CENTROID;
 
     // =========== Candidate gain attenuation ============================== //
     // These terms are used to update the gain of a given candidate based on
@@ -97,6 +105,10 @@ struct t_appack_options {
     // TODO: It may be a good idea to have max different distances for different
     //       types of molecules / clusters. For example, CLBs vs DSPs
     float max_candidate_distance = std::numeric_limits<float>::max();
+
+    // TODO: This should be an option similar to the target pin utilization
+    //       so we can specify the max distance per block type!
+    int logic_block_type_index = -1;
 
     // =========== Unrelated clustering ==================================== //
     // After searching for candidates by connectivity and timing, the user may

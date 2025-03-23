@@ -60,6 +60,7 @@ static void remove_molecule_from_pb_stats_candidates(
 static void add_molecule_to_pb_stats_candidates(
     PackMoleculeId molecule_id,
     ClusterGainStats& cluster_gain_stats,
+    t_logical_block_type_ptr cluster_type,
     int max_queue_size,
     AttractionInfo& attraction_groups,
     const Prepacker& prepacker,
@@ -771,6 +772,7 @@ void GreedyCandidateSelector::add_cluster_molecule_candidates_by_connectivity_an
         if (!cluster_legalizer.is_mol_clustered(molecule_id) && cluster_legalizer.is_molecule_compatible(molecule_id, legalization_cluster_id)) {
             add_molecule_to_pb_stats_candidates(molecule_id,
                                                 cluster_gain_stats,
+                                                cluster_legalizer.get_cluster_type(legalization_cluster_id),
                                                 packer_opts_.feasible_block_array_size,
                                                 attraction_groups,
                                                 prepacker_,
@@ -799,6 +801,7 @@ void GreedyCandidateSelector::add_cluster_molecule_candidates_by_transitive_conn
         if (!cluster_legalizer.is_mol_clustered(molecule_id) && cluster_legalizer.is_molecule_compatible(molecule_id, legalization_cluster_id)) {
             add_molecule_to_pb_stats_candidates(molecule_id,
                                                 cluster_gain_stats,
+                                                cluster_legalizer.get_cluster_type(legalization_cluster_id),
                                                 std::min(packer_opts_.feasible_block_array_size,
                                                          AAPACK_MAX_TRANSITIVE_EXPLORE),
                                                 attraction_groups,
@@ -832,6 +835,7 @@ void GreedyCandidateSelector::add_cluster_molecule_candidates_by_highfanout_conn
         if (!cluster_legalizer.is_mol_clustered(molecule_id) && cluster_legalizer.is_molecule_compatible(molecule_id, legalization_cluster_id)) {
             add_molecule_to_pb_stats_candidates(molecule_id,
                                                 cluster_gain_stats,
+                                                cluster_legalizer.get_cluster_type(legalization_cluster_id),
                                                 std::min(packer_opts_.feasible_block_array_size,
                                                          AAPACK_MAX_HIGH_FANOUT_EXPLORE),
                                                 attraction_groups,
@@ -892,6 +896,7 @@ void GreedyCandidateSelector::add_cluster_molecule_candidates_by_attraction_grou
             if (!cluster_legalizer.is_mol_clustered(molecule_id) && cluster_legalizer.is_molecule_compatible(molecule_id, legalization_cluster_id)) {
                 add_molecule_to_pb_stats_candidates(molecule_id,
                                                     cluster_gain_stats,
+                                                    cluster_legalizer.get_cluster_type(legalization_cluster_id),
                                                     packer_opts_.feasible_block_array_size,
                                                     attraction_groups,
                                                     prepacker_,
@@ -913,6 +918,7 @@ void GreedyCandidateSelector::add_cluster_molecule_candidates_by_attraction_grou
         if (!cluster_legalizer.is_mol_clustered(molecule_id) && cluster_legalizer.is_molecule_compatible(molecule_id, legalization_cluster_id)) {
             add_molecule_to_pb_stats_candidates(molecule_id,
                                                 cluster_gain_stats,
+                                                cluster_legalizer.get_cluster_type(legalization_cluster_id),
                                                 packer_opts_.feasible_block_array_size,
                                                 attraction_groups,
                                                 prepacker_,
@@ -927,6 +933,7 @@ void GreedyCandidateSelector::add_cluster_molecule_candidates_by_attraction_grou
  */
 static void add_molecule_to_pb_stats_candidates(PackMoleculeId molecule_id,
                                                 ClusterGainStats& cluster_gain_stats,
+                                                t_logical_block_type_ptr cluster_type,
                                                 int max_queue_size,
                                                 AttractionInfo& attraction_groups,
                                                 const Prepacker& prepacker,
@@ -937,12 +944,14 @@ static void add_molecule_to_pb_stats_candidates(PackMoleculeId molecule_id,
     // see if the molecule is too far away from the position of the cluster.
     // If so, do not add it to the list of candidates.
     if (appack_ctx.appack_options.use_appack) {
-        const t_flat_pl_loc mol_loc = get_molecule_pos(molecule_id,
-                                                       prepacker,
-                                                       appack_ctx);
-        float dist = get_manhattan_distance(mol_loc, cluster_gain_stats.flat_cluster_position);
-        if (dist > appack_ctx.appack_options.max_candidate_distance)
-            return;
+        if (cluster_type->index == appack_ctx.appack_options.logic_block_type_index) {
+            const t_flat_pl_loc mol_loc = get_molecule_pos(molecule_id,
+                                                           prepacker,
+                                                           appack_ctx);
+            float dist = get_manhattan_distance(mol_loc, cluster_gain_stats.flat_cluster_position);
+            if (dist > appack_ctx.appack_options.max_candidate_distance)
+                return;
+        }
     }
 
     int num_molecule_failures = 0;
