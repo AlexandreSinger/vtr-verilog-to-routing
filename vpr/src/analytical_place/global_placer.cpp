@@ -8,6 +8,7 @@
 
 #include "global_placer.h"
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <vector>
 #include "analytical_solver.h"
@@ -207,6 +208,9 @@ PartialPlacement SimPLGlobalPlacer::place() {
     float total_time_spent_in_solver = 0.0f;
     float total_time_spent_in_legalizer = 0.0f;
 
+    PartialPlacement best_p_placement(ap_netlist_);
+    double best_ub_hpwl = std::numeric_limits<double>::max();
+
     // Run the global placer.
     for (size_t i = 0; i < max_num_iterations_; i++) {
         float iter_start_time = runtime_timer.elapsed_sec();
@@ -235,12 +239,20 @@ PartialPlacement SimPLGlobalPlacer::place() {
                                iter_end_time - iter_start_time);
         }
 
+        if (ub_hpwl < best_ub_hpwl) {
+            best_ub_hpwl = ub_hpwl;
+            best_p_placement = p_placement;
+        }
+
         // Exit condition: If the upper-bound and lower-bound HPWLs are
         // sufficiently close together then stop.
         double hpwl_relative_gap = (ub_hpwl - lb_hpwl) / ub_hpwl;
         if (hpwl_relative_gap < target_hpwl_relative_gap_)
             break;
     }
+
+    // FIXME: Not sure how worth it this is, but it makes sense.
+    p_placement = best_p_placement;
 
     // Print statistics on the solver used.
     solver_->print_statistics();

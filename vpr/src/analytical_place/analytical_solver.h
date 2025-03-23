@@ -358,11 +358,13 @@ class B2BSolver : public AnalyticalSolver {
     ///        than some epsilon.
     ///        Decreasing this number may lead to more instability, but can yield
     ///        a higher quality solution.
-    static constexpr double distance_epsilon_ = 0.5;
+    static constexpr double distance_epsilon_ = 0.01;
+
+    static constexpr double anchor_distance_epsilon_ = 10.0;
 
     /// @brief Max number of bound update / solve iterations. Increasing this
     ///        number will yield better quality at the expense of runtime.
-    static constexpr unsigned max_num_bound_updates_ = 6;
+    static constexpr unsigned max_num_bound_updates_ = 24;
 
     /// @brief Max number of iterations the Conjugate Gradient solver can perform.
     ///        Due to the weights getting very large in the early iterations of
@@ -375,7 +377,7 @@ class B2BSolver : public AnalyticalSolver {
     ///        to prevent this behaviour and get good runtime.
     // TODO: Need to investigate this more to find a good number for this.
     // TODO: Should this be a proportion of the design size?
-    static constexpr unsigned max_cg_iterations_ = 200;
+    static constexpr unsigned max_cg_iterations_ = 150;
 
     // The following constants are used to configure the anchor weighting.
     // The weights of anchors grow exponentially each iteration by the following
@@ -390,7 +392,7 @@ class B2BSolver : public AnalyticalSolver {
     /// @brief Factor for controlling the growth of the exponential term in the
     ///        weight factor function. Larger numbers will cause the anchor
     ///        weights to grow slower.
-    static constexpr double anchor_weight_exp_fac_ = 5.0;
+    static constexpr double anchor_weight_exp_fac_ = 5;
 
   public:
     B2BSolver(const APNetlist& ap_netlist,

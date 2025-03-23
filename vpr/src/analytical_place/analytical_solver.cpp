@@ -9,6 +9,7 @@
 #include "analytical_solver.h"
 #include <cstddef>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <random>
 #include <utility>
@@ -516,6 +517,9 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
     //         the bounds are likely to have changed after step 2.
     // TODO: As well as having a maximum number of bound updates, should also
     //       investigate stopping when the HPWL converges.
+    double prev_hpwl = std::numeric_limits<double>::max();
+    double curr_hpwl = prev_hpwl;
+    unsigned num_bigger = 0;
     for (unsigned counter = 0; counter < max_num_bound_updates_; counter++) {
         VTR_LOGV(log_verbosity_ >= 10,
                  "\tPlacement HPWL in b2b loop: %f\n",
@@ -569,6 +573,14 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
             p_placement.block_x_locs[blk_id] = x[row_id_idx];
             p_placement.block_y_locs[blk_id] = y[row_id_idx];
         }
+
+        curr_hpwl = p_placement.get_hpwl(netlist_);
+        if (curr_hpwl > prev_hpwl || std::abs(curr_hpwl - prev_hpwl) < 0.001 * curr_hpwl)
+            num_bigger++;
+        
+        if (num_bigger >= 2)
+            break;
+        prev_hpwl = curr_hpwl;
 
         // Update the guesses with the most recent answer
         x_guess = x;
@@ -723,8 +735,12 @@ void B2BSolver::update_linear_system_with_anchors(PartialPlacement& p_placement,
         double dx = std::abs(p_placement.block_x_locs[blk_id] - block_x_locs_legalized[blk_id]);
         double dy = std::abs(p_placement.block_y_locs[blk_id] - block_y_locs_legalized[blk_id]);
         // Anchor node are always 2 pins.
-        double pseudo_w_x = coeff_pseudo_anchor * 2.0 / std::max(dx, distance_epsilon_);
-        double pseudo_w_y = coeff_pseudo_anchor * 2.0 / std::max(dy, distance_epsilon_);
+        // double pseudo_w_x = coeff_pseudo_anchor * 2.0 / std::max(dx, distance_epsilon_);
+        // double pseudo_w_y = coeff_pseudo_anchor * 2.0 / std::max(dy, distance_epsilon_);
+        // double pseudo_w_x = coeff_pseudo_anchor * 2.0 / std::max(dx, anchor_distance_epsilon_);
+        // double pseudo_w_y = coeff_pseudo_anchor * 2.0 / std::max(dy, anchor_distance_epsilon_);
+        double pseudo_w_x = coeff_pseudo_anchor * 2.0;
+        double pseudo_w_y = coeff_pseudo_anchor * 2.0;
         A_sparse_x.coeffRef(row_id_idx, row_id_idx) += pseudo_w_x;
         A_sparse_y.coeffRef(row_id_idx, row_id_idx) += pseudo_w_y;
         b_x(row_id_idx) += pseudo_w_x * block_x_locs_legalized[blk_id];
