@@ -210,7 +210,8 @@ bool try_pack(t_packer_opts* packer_opts,
             break; //Done
         } else if (pack_iteration == 1 && !floorplan_not_fitting) {
             // FIXME: Should make a special backup for APPack since we should ignore its state.
-            // appack_ctx.appack_options.max_candidate_distance = std::numeric_limits<float>::max();
+            appack_ctx.appack_options.max_candidate_distance = std::numeric_limits<float>::max();
+            appack_ctx.appack_options.use_appack = false;
             //1st pack attempt was unsuccessful (i.e. not dense enough) and we have control of unrelated clustering
             //
             //Turn it on to increase packing density
@@ -236,13 +237,15 @@ bool try_pack(t_packer_opts* packer_opts,
              * until the last iteration, when we create attraction groups for every partition, if needed.
              */
         } else if (pack_iteration == 1 && floorplan_not_fitting) {
-            // appack_ctx.appack_options.max_candidate_distance = std::numeric_limits<float>::max();
+            appack_ctx.appack_options.max_candidate_distance = std::numeric_limits<float>::max();
+            appack_ctx.appack_options.use_appack = false;
             VTR_LOG("Floorplan regions are overfull: trying to pack again using cluster attraction groups. \n");
             attraction_groups.create_att_groups_for_overfull_regions(overfull_partition_regions);
             attraction_groups.set_att_group_pulls(1);
 
         } else if (pack_iteration >= 2 && pack_iteration < 5 && floorplan_not_fitting) {
-            // appack_ctx.appack_options.max_candidate_distance = std::numeric_limits<float>::max();
+            appack_ctx.appack_options.max_candidate_distance = std::numeric_limits<float>::max();
+            appack_ctx.appack_options.use_appack = false;
             if (pack_iteration == 2) {
                 VTR_LOG("Floorplan regions are overfull: trying to pack again with more attraction groups exploration. \n");
                 attraction_groups.create_att_groups_for_overfull_regions(overfull_partition_regions);
