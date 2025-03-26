@@ -957,7 +957,10 @@ static void add_molecule_to_pb_stats_candidates(PackMoleculeId molecule_id,
                                                            prepacker,
                                                            appack_ctx);
             float dist = get_manhattan_distance(mol_loc, cluster_gain_stats.flat_cluster_position);
-            if (dist > appack_ctx.appack_options.max_candidate_distance)
+            float max_dist = appack_ctx.appack_options.max_candidate_distance;
+            if (cluster_type->index != appack_ctx.appack_options.logic_block_type_index)
+                max_dist *= 3.5f;
+            if (dist > max_dist)
                 return;
         }
     }
