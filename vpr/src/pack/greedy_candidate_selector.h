@@ -120,6 +120,8 @@ struct ClusterGainStats {
     ///
     /// This is only set and used when APPack is used.
     t_flat_pl_loc mol_pos_sum;
+
+    bool is_memory = false;
 };
 
 /**

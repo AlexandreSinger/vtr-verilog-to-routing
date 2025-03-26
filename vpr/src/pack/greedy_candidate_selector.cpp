@@ -40,6 +40,7 @@ static float get_molecule_gain(PackMoleculeId molecule_id,
                                AttractGroupId cluster_attraction_group_id,
                                AttractionInfo& attraction_groups,
                                int num_molecule_failures,
+                               t_logical_block_type_ptr cluster_type,
                                const Prepacker& prepacker,
                                const AtomNetlist& atom_netlist,
                                const APPackContext& appack_ctx);
@@ -244,6 +245,12 @@ ClusterGainStats GreedyCandidateSelector::create_cluster_gain_stats(
         cluster_gain_stats.flat_cluster_position = seed_mol_pos;
         cluster_gain_stats.mol_pos_sum = seed_mol_pos;
     }
+
+    const auto& seed_mol = prepacker_.get_molecule(cluster_seed_mol_id);
+    AtomBlockId seed_atom = seed_mol.atom_block_ids[seed_mol.root];
+    const auto seed_pb = cluster_legalizer.atom_pb_lookup().atom_pb(seed_atom);
+    cluster_gain_stats.is_memory = seed_pb->pb_graph_node->pb_type->class_type == MEMORY_CLASS;
+
 
     // Return the cluster gain stats.
     return cluster_gain_stats;
@@ -944,7 +951,8 @@ static void add_molecule_to_pb_stats_candidates(PackMoleculeId molecule_id,
     // see if the molecule is too far away from the position of the cluster.
     // If so, do not add it to the list of candidates.
     if (appack_ctx.appack_options.use_appack) {
-        if (cluster_type->index == appack_ctx.appack_options.logic_block_type_index) {
+        if (!cluster_gain_stats.is_memory) {
+        // if (cluster_type->index == appack_ctx.appack_options.logic_block_type_index) {
             const t_flat_pl_loc mol_loc = get_molecule_pos(molecule_id,
                                                            prepacker,
                                                            appack_ctx);
@@ -985,11 +993,11 @@ static void add_molecule_to_pb_stats_candidates(PackMoleculeId molecule_id,
 
     if (cluster_gain_stats.num_feasible_blocks >= max_queue_size - 1) {
         /* maximum size for array, remove smallest gain element and sort */
-        if (get_molecule_gain(molecule_id, cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, prepacker, atom_netlist, appack_ctx) > get_molecule_gain(cluster_gain_stats.feasible_blocks[0], cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, prepacker, atom_netlist, appack_ctx)) {
+        if (get_molecule_gain(molecule_id, cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, cluster_type, prepacker, atom_netlist, appack_ctx) > get_molecule_gain(cluster_gain_stats.feasible_blocks[0], cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, cluster_type, prepacker, atom_netlist, appack_ctx)) {
             /* single loop insertion sort */
             int j;
             for (j = 0; j < cluster_gain_stats.num_feasible_blocks - 1; j++) {
-                if (get_molecule_gain(molecule_id, cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, prepacker, atom_netlist, appack_ctx) <= get_molecule_gain(cluster_gain_stats.feasible_blocks[j + 1], cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, prepacker, atom_netlist, appack_ctx)) {
+                if (get_molecule_gain(molecule_id, cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, cluster_type, prepacker, atom_netlist, appack_ctx) <= get_molecule_gain(cluster_gain_stats.feasible_blocks[j + 1], cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, cluster_type, prepacker, atom_netlist, appack_ctx)) {
                     cluster_gain_stats.feasible_blocks[j] = molecule_id;
                     break;
                 } else {
@@ -1004,7 +1012,7 @@ static void add_molecule_to_pb_stats_candidates(PackMoleculeId molecule_id,
         /* Expand array and single loop insertion sort */
         int j;
         for (j = cluster_gain_stats.num_feasible_blocks - 1; j >= 0; j--) {
-            if (get_molecule_gain(cluster_gain_stats.feasible_blocks[j], cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, prepacker, atom_netlist, appack_ctx) > get_molecule_gain(molecule_id, cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, prepacker, atom_netlist, appack_ctx)) {
+            if (get_molecule_gain(cluster_gain_stats.feasible_blocks[j], cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, cluster_type, prepacker, atom_netlist, appack_ctx) > get_molecule_gain(molecule_id, cluster_gain_stats, cluster_att_grp, attraction_groups, num_molecule_failures, cluster_type, prepacker, atom_netlist, appack_ctx)) {
                 cluster_gain_stats.feasible_blocks[j + 1] = cluster_gain_stats.feasible_blocks[j];
             } else {
                 cluster_gain_stats.feasible_blocks[j + 1] = molecule_id;
@@ -1062,6 +1070,7 @@ static float get_molecule_gain(PackMoleculeId molecule_id,
                                AttractGroupId cluster_attraction_group_id,
                                AttractionInfo& attraction_groups,
                                int num_molecule_failures,
+                               t_logical_block_type_ptr cluster_type,
                                const Prepacker& prepacker,
                                const AtomNetlist& atom_netlist,
                                const APPackContext& appack_ctx) {
@@ -1121,7 +1130,7 @@ static float get_molecule_gain(PackMoleculeId molecule_id,
     // Also what happens when we try to merge in atoms from the flat placement
     // which are not connected to anything inside the cluster?
     const t_appack_options& appack_options = appack_ctx.appack_options;
-    if (appack_options.use_appack && gain > 0.f) {
+    if (appack_options.use_appack && gain > 0.f && !cluster_gain_stats.is_memory) {
         // Get the position of the molecule
         t_flat_pl_loc target_loc = get_molecule_pos(molecule_id, prepacker, appack_ctx);
 
