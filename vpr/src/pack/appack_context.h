@@ -124,7 +124,7 @@ struct t_appack_options {
     // search within the cluster's tile. Setting this to a higher number would
     // allow APPack to search farther away; but may bring in molecules which
     // do not "want" to be in the cluster.
-    static constexpr float max_unrelated_tile_distance = 1.0f;
+    static constexpr float max_unrelated_tile_distance = 5.0f;
 
     // Unrelated clustering occurs after all other candidate selection methods
     // have failed. This parameter sets how many time we will attempt unrelated
@@ -135,7 +135,7 @@ struct t_appack_options {
     // NOTE: A similar option exists in the candidate selector class. This was
     //       duplicated since it is very likely that APPack would need a
     //       different value for this option than the non-APPack flow.
-    static constexpr int max_unrelated_clustering_attempts = 2;
+    static constexpr int max_unrelated_clustering_attempts = 10;
 
     // TODO: Investigate adding flat placement info to seed selection.
 };
