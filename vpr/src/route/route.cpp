@@ -208,35 +208,14 @@ bool route(const Netlist<>& net_list,
         size_t i = 0;
         std::set<RRNodeId> tried_nodes;
         auto rng = vtr::RandomNumberGenerator(0);
-        while (true) {
-            if (i >= max_tries)
-                break;
-            if (num_trials == target_num_trials)
-                break;
-    // Pick a random RRNode
-    // auto rng = vtr::RandomNumberGenerator(0);
-    // RRNodeId sample_rr_node = (RRNodeId)rng.irand(g_vpr_ctx.device().rr_graph.num_nodes());
-    // RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + i)][0];
-    size_t offset = rng.irand(net_list.nets().size());
-    RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + offset)][0];
-    if (tried_nodes.count(sample_rr_node) != 0) {
-        i++;
-        continue;
-    }
-    tried_nodes.insert(sample_rr_node);
+        t_bb bounding_box;
+        bounding_box.xmin = 0;
+        bounding_box.xmax = device_ctx.grid.width() + 1;
+        bounding_box.ymin = 0;
+        bounding_box.ymax = device_ctx.grid.height() + 1;
+        bounding_box.layer_min = 0;
+        bounding_box.layer_max = device_ctx.grid.get_num_layers() - 1;
 
-    // Get all the path delays from this sample node.
-    auto path_delays = calculate_all_path_delays_from_rr_node(sample_rr_node, router_opts, false);
-
-    // Get the max difference between the heuristic delay and the actual delay
-    for (RRNodeId rr_node_id : g_vpr_ctx.device().rr_graph.nodes()) {
-        float path_delay = path_delays[rr_node_id];
-        if (std::isnan(path_delay))
-            continue;
-        // Can only get the heuristic of sinks.
-        if (g_vpr_ctx.device().rr_graph.node_type(rr_node_id) != t_rr_type::SINK)
-            continue;
-        // Compute the lookahead from the source to this node.
         t_conn_cost_params cost_params;
         cost_params.criticality = 1.;
         cost_params.astar_fac = router_opts.astar_fac;
@@ -244,15 +223,86 @@ bool route(const Netlist<>& net_list,
         cost_params.post_target_prune_fac = router_opts.post_target_prune_fac;
         cost_params.post_target_prune_offset = router_opts.post_target_prune_offset;
         cost_params.bend_cost = router_opts.bend_cost;
-        float heuristic_delay = router_lookahead->get_expected_cost(sample_rr_node,
-                                                                    rr_node_id,
-                                                                    cost_params,
-                                                                    0);
-        if (heuristic_delay > path_delay) {
-            max_difference = std::max(max_difference, heuristic_delay - path_delay);
-        }
-        // VTR_LOG("\t(%g, %g)\n", path_delay, heuristic_delay);
-    }
+        /* This function is called during placement. Thus, the flat routing option should be disabled. */
+        //TODO: Placement is run with is_flat=false. However, since is_flat is passed, det_routing_arch should
+        //be also passed
+        t_det_routing_arch temp_det_routing_arch;
+        auto temp_router_lookahead = make_router_lookahead(temp_det_routing_arch, e_router_lookahead::NO_OP,
+                                                      /*write_lookahead=*/"", /*read_lookahead=*/"",
+                                                      /*segment_inf=*/{},
+                                                      false /*is_flat*/);
+
+        // ParallelConnectionRouter<FourAryHeap> router(
+        //     device_ctx.grid,
+        //     *temp_router_lookahead,
+        //     device_ctx.rr_graph.rr_nodes(),
+        //     &g_vpr_ctx.device().rr_graph,
+        //     device_ctx.rr_rc_data,
+        //     device_ctx.rr_graph.rr_switch(),
+        //     route_ctx.rr_node_route_inf,
+        //     false /*is_flat*/,
+        //     4,
+        //     16,
+        //     true);
+
+        SerialConnectionRouter<FourAryHeap> router(
+            device_ctx.grid,
+            *temp_router_lookahead,
+            device_ctx.rr_graph.rr_nodes(),
+            &g_vpr_ctx.device().rr_graph,
+            device_ctx.rr_rc_data,
+            device_ctx.rr_graph.rr_switch(),
+            route_ctx.rr_node_route_inf,
+            false /*is_flat*/);
+
+        RouterStats router_stats;
+        ConnectionParameters conn_params(ParentNetId::INVALID(), OPEN, false, std::unordered_map<RRNodeId, int>());
+        while (true) {
+            if (i >= max_tries)
+                break;
+            if (num_trials == target_num_trials)
+                break;
+            // Pick a random RRNode
+            // auto rng = vtr::RandomNumberGenerator(0);
+            // RRNodeId sample_rr_node = (RRNodeId)rng.irand(g_vpr_ctx.device().rr_graph.num_nodes());
+            // RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + i)][0];
+            size_t offset = rng.irand(net_list.nets().size());
+            RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + offset)][0];
+            if (tried_nodes.count(sample_rr_node) != 0) {
+                i++;
+                continue;
+            }
+            tried_nodes.insert(sample_rr_node);
+
+            // Get all the path delays from this sample node.
+            RouteTree tree(sample_rr_node);
+            vtr::vector<RRNodeId, RTExploredNode> shortest_paths = router.timing_driven_find_all_shortest_paths_from_route_tree(tree.root(),
+                                                                                                                                cost_params,
+                                                                                                                                bounding_box,
+                                                                                                                                router_stats,
+                                                                                                                                conn_params);
+
+            // Get the max difference between the heuristic delay and the actual delay
+            for (RRNodeId rr_node_id : g_vpr_ctx.device().rr_graph.nodes()) {
+                if (rr_node_id == sample_rr_node)
+                    continue;
+                float path_delay = route_ctx.rr_node_route_inf[rr_node_id].backward_path_cost;
+                if (std::isnan(path_delay) || std::isinf(path_delay))
+                    continue;
+                // Can only get the heuristic of sinks.
+                if (g_vpr_ctx.device().rr_graph.node_type(rr_node_id) != t_rr_type::SINK)
+                    continue;
+                // Compute the lookahead from the source to this node.
+                float heuristic_delay = router_lookahead->get_expected_cost(sample_rr_node,
+                                                                            rr_node_id,
+                                                                            cost_params,
+                                                                            0);
+                if (heuristic_delay > path_delay) {
+                    max_difference = std::max(max_difference, heuristic_delay - path_delay);
+                }
+                // VTR_LOG("\t(%g, %g)\n", path_delay, heuristic_delay);
+            }
+            router.reset_path_costs();
             VTR_LOG("%zu: %g\n", num_trials, max_difference);
             i++;
             num_trials++;
