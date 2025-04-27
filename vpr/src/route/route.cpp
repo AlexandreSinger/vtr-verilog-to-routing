@@ -5,11 +5,13 @@
 #include "place_and_route.h"
 #include "read_route.h"
 #include "route.h"
+#include <cmath>
 #include "route_common.h"
 #include "route_debug.h"
 #include "route_profiling.h"
 #include "route_utils.h"
 #include "rr_graph.h"
+#include "router_delay_profiling.h"
 #include "vtr_time.h"
 
 bool route(const Netlist<>& net_list,
@@ -194,6 +196,73 @@ bool route(const Netlist<>& net_list,
         VTR_LOG("Initial Net Connection Criticality Histogram:\n");
         print_router_criticality_histogram(net_list, *timing_info, netlist_pin_lookup, is_flat);
     }
+
+    // HACKY CODE INCOMING
+    // ========================================================================
+    {
+        vtr::ScopedStartFinishTimer timer("Computing Max Heuristic Overestimation");
+        size_t target_num_trials = 100;
+        float max_difference = 0.0f;
+        size_t num_trials = 0;
+        size_t max_tries = 10000;
+        size_t i = 0;
+        std::set<RRNodeId> tried_nodes;
+        auto rng = vtr::RandomNumberGenerator(0);
+        while (true) {
+            if (i >= max_tries)
+                break;
+            if (num_trials == target_num_trials)
+                break;
+    // Pick a random RRNode
+    // auto rng = vtr::RandomNumberGenerator(0);
+    // RRNodeId sample_rr_node = (RRNodeId)rng.irand(g_vpr_ctx.device().rr_graph.num_nodes());
+    // RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + i)][0];
+    size_t offset = rng.irand(net_list.nets().size());
+    RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + offset)][0];
+    if (tried_nodes.count(sample_rr_node) != 0) {
+        i++;
+        continue;
+    }
+    tried_nodes.insert(sample_rr_node);
+
+    // Get all the path delays from this sample node.
+    auto path_delays = calculate_all_path_delays_from_rr_node(sample_rr_node, router_opts, false);
+
+    // Get the max difference between the heuristic delay and the actual delay
+    for (RRNodeId rr_node_id : g_vpr_ctx.device().rr_graph.nodes()) {
+        float path_delay = path_delays[rr_node_id];
+        if (std::isnan(path_delay))
+            continue;
+        // Can only get the heuristic of sinks.
+        if (g_vpr_ctx.device().rr_graph.node_type(rr_node_id) != t_rr_type::SINK)
+            continue;
+        // Compute the lookahead from the source to this node.
+        t_conn_cost_params cost_params;
+        cost_params.criticality = 1.;
+        cost_params.astar_fac = router_opts.astar_fac;
+        cost_params.astar_offset = router_opts.astar_offset;
+        cost_params.post_target_prune_fac = router_opts.post_target_prune_fac;
+        cost_params.post_target_prune_offset = router_opts.post_target_prune_offset;
+        cost_params.bend_cost = router_opts.bend_cost;
+        float heuristic_delay = router_lookahead->get_expected_cost(sample_rr_node,
+                                                                    rr_node_id,
+                                                                    cost_params,
+                                                                    0);
+        if (heuristic_delay > path_delay) {
+            max_difference = std::max(max_difference, heuristic_delay - path_delay);
+        }
+        // VTR_LOG("\t(%g, %g)\n", path_delay, heuristic_delay);
+    }
+            VTR_LOG("%zu: %g\n", num_trials, max_difference);
+            i++;
+            num_trials++;
+        }
+
+    VTR_LOG("=================================================================\n");
+    VTR_LOG("Max difference between heuristic and actual: %g\n", max_difference);
+    VTR_LOG("=================================================================\n");
+    }
+    // ========================================================================
 
     std::unique_ptr<NetPinTimingInvalidator> pin_timing_invalidator;
     pin_timing_invalidator = make_net_pin_timing_invalidator(

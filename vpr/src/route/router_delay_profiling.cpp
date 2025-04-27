@@ -197,6 +197,13 @@ vtr::vector<RRNodeId, float> calculate_all_path_delays_from_rr_node(RRNodeId src
         RRNodeId sink_rr_node(isink);
         if (RRNodeId(sink_rr_node) == src_rr_node) {
             path_delays_to[sink_rr_node] = 0.;
+            continue;
+        }
+        const auto& route_inf = route_ctx.rr_node_route_inf[sink_rr_node];
+        path_delays_to[sink_rr_node] = route_inf.backward_path_cost;
+        /*
+        if (RRNodeId(sink_rr_node) == src_rr_node) {
+            path_delays_to[sink_rr_node] = 0.;
         } else {
             if (!shortest_paths[sink_rr_node].index.is_valid()) continue;
 
@@ -211,6 +218,7 @@ vtr::vector<RRNodeId, float> calculate_all_path_delays_from_rr_node(RRNodeId src
 
             path_delays_to[sink_rr_node] = rt_node_of_sink->Tdel;
         }
+        */
     }
     router.reset_path_costs();
 
