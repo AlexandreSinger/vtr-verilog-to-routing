@@ -255,6 +255,20 @@ bool route(const Netlist<>& net_list,
             route_ctx.rr_node_route_inf,
             false /*is_flat*/);
 
+        // Collect the sink RR nodes. Only sink RR nodes can be the target of the
+        // heuristic, so they are the only ones that we care about.
+        std::vector<RRNodeId> sink_rr_nodes; 
+        sink_rr_nodes.reserve(g_vpr_ctx.device().rr_graph.num_nodes());
+        for (RRNodeId rr_node_id : g_vpr_ctx.device().rr_graph.nodes()) {
+            if (g_vpr_ctx.device().rr_graph.node_type(rr_node_id) == t_rr_type::SINK)
+                sink_rr_nodes.push_back(rr_node_id);
+        }
+
+        // Print some header information
+        VTR_LOG("------------------  ----------------------  ----------------  -----------------------  -----------------------------  -------------------  ------------------\n");
+        VTR_LOG("Node Trial Number   Current Max Difference  Source Node Type  Number of Targets Found  Number of Overestimated Paths  Avg. Overestimation  Max Overestimation\n");
+        VTR_LOG("------------------  ----------------------  ----------------  -----------------------  -----------------------------  -------------------  ------------------\n");
+
         RouterStats router_stats;
         ConnectionParameters conn_params(ParentNetId::INVALID(), OPEN, false, std::unordered_map<RRNodeId, int>());
         while (true) {
@@ -266,8 +280,16 @@ bool route(const Netlist<>& net_list,
             // auto rng = vtr::RandomNumberGenerator(0);
             // RRNodeId sample_rr_node = (RRNodeId)rng.irand(g_vpr_ctx.device().rr_graph.num_nodes());
             // RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + i)][0];
+            // TODO: it may be better to create different groups of nodes and pick
+            //       random ones from those groups.
             size_t offset = rng.irand(net_list.nets().size());
-            RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + offset)][0];
+            // RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + offset)][0];
+            RRNodeId sample_rr_node(offset);
+            if (g_vpr_ctx.device().rr_graph.node_type(sample_rr_node) == t_rr_type::SINK ||
+                g_vpr_ctx.device().rr_graph.node_type(sample_rr_node) == t_rr_type::IPIN) {
+                i++;
+                continue;
+            }
             if (tried_nodes.count(sample_rr_node) != 0) {
                 i++;
                 continue;
@@ -276,6 +298,15 @@ bool route(const Netlist<>& net_list,
 
             // Get all the path delays from this sample node.
             RouteTree tree(sample_rr_node);
+            /*
+            auto res = router.timing_driven_route_connection_from_route_tree(tree.root(),
+                                                                             RRNodeId::INVALID(),
+                                                                             cost_params,
+                                                                             bounding_box,
+                                                                             router_stats,
+                                                                             conn_params);
+            (void)res;
+            */
             vtr::vector<RRNodeId, RTExploredNode> shortest_paths = router.timing_driven_find_all_shortest_paths_from_route_tree(tree.root(),
                                                                                                                                 cost_params,
                                                                                                                                 bounding_box,
@@ -283,27 +314,72 @@ bool route(const Netlist<>& net_list,
                                                                                                                                 conn_params);
 
             // Get the max difference between the heuristic delay and the actual delay
-            for (RRNodeId rr_node_id : g_vpr_ctx.device().rr_graph.nodes()) {
+            size_t num_targets = 0;
+            size_t num_overestimations = 0;
+            float total_overestimation = 0.0f;
+            float max_overestimation_this_iter = 0.0f;
+            for (RRNodeId rr_node_id : sink_rr_nodes) {
+                VTR_ASSERT_SAFE(g_vpr_ctx.device().rr_graph.node_type(rr_node_id) == t_rr_type::SINK);
                 if (rr_node_id == sample_rr_node)
                     continue;
                 float path_delay = route_ctx.rr_node_route_inf[rr_node_id].backward_path_cost;
                 if (std::isnan(path_delay) || std::isinf(path_delay))
                     continue;
-                // Can only get the heuristic of sinks.
-                if (g_vpr_ctx.device().rr_graph.node_type(rr_node_id) != t_rr_type::SINK)
-                    continue;
+                num_targets++;
                 // Compute the lookahead from the source to this node.
                 float heuristic_delay = router_lookahead->get_expected_cost(sample_rr_node,
                                                                             rr_node_id,
                                                                             cost_params,
                                                                             0);
                 if (heuristic_delay > path_delay) {
+                    num_overestimations++;
+                    total_overestimation += heuristic_delay - path_delay;
                     max_difference = std::max(max_difference, heuristic_delay - path_delay);
+                    max_overestimation_this_iter = std::max(max_overestimation_this_iter, heuristic_delay - path_delay);
                 }
                 // VTR_LOG("\t(%g, %g)\n", path_delay, heuristic_delay);
             }
             router.reset_path_costs();
-            VTR_LOG("%zu: %g\n", num_trials, max_difference);
+            router.clear_modified_rr_node_info();
+            std::string source_node_type;
+            switch (g_vpr_ctx.device().rr_graph.node_type(sample_rr_node)) {
+                case t_rr_type::CHANX:
+                    source_node_type = "CHANX";
+                    break;
+                case t_rr_type::CHANY:
+                    source_node_type = "CHANY";
+                    break;
+                case t_rr_type::IPIN:
+                    source_node_type = "IPIN";
+                    break;
+                case t_rr_type::NUM_RR_TYPES:
+                    source_node_type = "NUM_RR_TYPES";
+                    break;
+                case t_rr_type::OPIN:
+                    source_node_type = "OPIN";
+                    break;
+                case t_rr_type::SINK:
+                    source_node_type = "SINK";
+                    break;
+                case t_rr_type::SOURCE:
+                    source_node_type = "SOURCE";
+                    break;
+                default:
+                    source_node_type = "UNKNOWN";
+                    break;
+            }
+            float average_overestimation = 0.0f;
+            if (num_overestimations > 0)
+                average_overestimation = total_overestimation / (float) num_overestimations;
+            VTR_LOG("%18zu  %22g  %16s  %23zu  %29zu  %19g  %18g\n",
+                    num_trials,
+                    max_difference,
+                    source_node_type.c_str(),
+                    num_targets,
+                    num_overestimations,
+                    average_overestimation,
+                    max_overestimation_this_iter);
+            // VTR_LOG("%zu: %g\n", num_trials, max_difference);
             i++;
             num_trials++;
         }

@@ -172,9 +172,12 @@ void ConnectionRouter<Heap>::timing_driven_route_connection_from_heap(RRNodeId s
     }
 
     // Get bounding box for sink node used in timing_driven_expand_neighbour
-    VTR_ASSERT_SAFE(sink_node != RRNodeId::INVALID());
+    // This assertion is not necessary. Its ok for the sink_node to be invalid
+    // since the target_bb is only used if the sink_node is valid.
+    // VTR_ASSERT_SAFE(sink_node != RRNodeId::INVALID());
 
     t_bb target_bb;
+    if (sink_node.is_valid()) {
     if (rr_graph_->node_type(sink_node) == e_rr_type::SINK) { // We need to get a bounding box for the sink's entire tile
         vtr::Rect<int> tile_bb = grid_.get_tile_bb({rr_graph_->node_xlow(sink_node),
                                                     rr_graph_->node_ylow(sink_node),
@@ -193,6 +196,7 @@ void ConnectionRouter<Heap>::timing_driven_route_connection_from_heap(RRNodeId s
 
     target_bb.layer_min = rr_graph_->node_layer(RRNodeId(sink_node));
     target_bb.layer_max = rr_graph_->node_layer(RRNodeId(sink_node));
+    }
 
     // Start measuring path search time
     std::chrono::steady_clock::time_point begin_time = std::chrono::steady_clock::now();
