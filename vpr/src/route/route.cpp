@@ -14,6 +14,27 @@
 #include "router_delay_profiling.h"
 #include "vtr_time.h"
 
+static std::string get_rr_node_type_str(t_rr_type type) {
+    switch (type) {
+        case t_rr_type::CHANX:
+            return "CHANX";
+        case t_rr_type::CHANY:
+            return "CHANY";
+        case t_rr_type::IPIN:
+            return "IPIN";
+        case t_rr_type::NUM_RR_TYPES:
+            return "NUM_RR_TYPES";
+        case t_rr_type::OPIN:
+            return "OPIN";
+        case t_rr_type::SINK:
+            return "SINK";
+        case t_rr_type::SOURCE:
+            return "SOURCE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 bool route(const Netlist<>& net_list,
            int width_fac,
            const t_router_opts& router_opts,
@@ -264,10 +285,13 @@ bool route(const Netlist<>& net_list,
                 sink_rr_nodes.push_back(rr_node_id);
         }
 
+        std::vector<float> max_difference_per_type(t_rr_type::NUM_RR_TYPES, 0.0f);
+
         // Print some header information
-        VTR_LOG("------------------  ----------------------  ----------------  -----------------------  -----------------------------  -------------------  ------------------\n");
-        VTR_LOG("Node Trial Number   Current Max Difference  Source Node Type  Number of Targets Found  Number of Overestimated Paths  Avg. Overestimation  Max Overestimation\n");
-        VTR_LOG("------------------  ----------------------  ----------------  -----------------------  -----------------------------  -------------------  ------------------\n");
+        VTR_LOG("----------  --------------------  -----------  ------------  --------------  ---------------  ------------------  --------------  --------------\n");
+        VTR_LOG("Trial Num.  Worst Overestimation  Source Node  Num. Targets  Avg. Path Cost  Avg. Heur. Cost  Num. Overestimated  Avg.            Max           \n");
+        VTR_LOG("            So Far                Type         Found                                          Paths               Overestimation  Overestimation\n");
+        VTR_LOG("----------  --------------------  -----------  ------------  --------------  ---------------  ------------------  --------------  --------------\n");
 
         RouterStats router_stats;
         ConnectionParameters conn_params(ParentNetId::INVALID(), OPEN, false, std::unordered_map<RRNodeId, int>());
@@ -282,9 +306,10 @@ bool route(const Netlist<>& net_list,
             // RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + i)][0];
             // TODO: it may be better to create different groups of nodes and pick
             //       random ones from those groups.
-            size_t offset = rng.irand(net_list.nets().size());
+            // size_t offset = rng.irand(net_list.nets().size());
             // RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + offset)][0];
-            RRNodeId sample_rr_node(offset);
+            RRNodeId sample_rr_node(rng.irand(g_vpr_ctx.device().rr_graph.num_nodes()));
+            t_rr_type sample_rr_node_type = g_vpr_ctx.device().rr_graph.node_type(sample_rr_node);
             if (g_vpr_ctx.device().rr_graph.node_type(sample_rr_node) == t_rr_type::SINK ||
                 g_vpr_ctx.device().rr_graph.node_type(sample_rr_node) == t_rr_type::IPIN) {
                 i++;
@@ -317,6 +342,8 @@ bool route(const Netlist<>& net_list,
             size_t num_targets = 0;
             size_t num_overestimations = 0;
             float total_overestimation = 0.0f;
+            float total_path_cost = 0.0f;
+            float total_heur_cost = 0.0f;
             float max_overestimation_this_iter = 0.0f;
             for (RRNodeId rr_node_id : sink_rr_nodes) {
                 VTR_ASSERT_SAFE(g_vpr_ctx.device().rr_graph.node_type(rr_node_id) == t_rr_type::SINK);
@@ -325,7 +352,6 @@ bool route(const Netlist<>& net_list,
                 float path_delay = route_ctx.rr_node_route_inf[rr_node_id].backward_path_cost;
                 if (std::isnan(path_delay) || std::isinf(path_delay))
                     continue;
-                num_targets++;
                 // Compute the lookahead from the source to this node.
                 float heuristic_delay = router_lookahead->get_expected_cost(sample_rr_node,
                                                                             rr_node_id,
@@ -336,46 +362,32 @@ bool route(const Netlist<>& net_list,
                     total_overestimation += heuristic_delay - path_delay;
                     max_difference = std::max(max_difference, heuristic_delay - path_delay);
                     max_overestimation_this_iter = std::max(max_overestimation_this_iter, heuristic_delay - path_delay);
-                }
+                    max_difference_per_type[sample_rr_node_type] = std::max(max_difference_per_type[sample_rr_node_type], heuristic_delay - path_delay);
+                 }
+                total_path_cost += path_delay;
+                total_heur_cost += heuristic_delay;
+                num_targets++;
                 // VTR_LOG("\t(%g, %g)\n", path_delay, heuristic_delay);
             }
             router.reset_path_costs();
             router.clear_modified_rr_node_info();
-            std::string source_node_type;
-            switch (g_vpr_ctx.device().rr_graph.node_type(sample_rr_node)) {
-                case t_rr_type::CHANX:
-                    source_node_type = "CHANX";
-                    break;
-                case t_rr_type::CHANY:
-                    source_node_type = "CHANY";
-                    break;
-                case t_rr_type::IPIN:
-                    source_node_type = "IPIN";
-                    break;
-                case t_rr_type::NUM_RR_TYPES:
-                    source_node_type = "NUM_RR_TYPES";
-                    break;
-                case t_rr_type::OPIN:
-                    source_node_type = "OPIN";
-                    break;
-                case t_rr_type::SINK:
-                    source_node_type = "SINK";
-                    break;
-                case t_rr_type::SOURCE:
-                    source_node_type = "SOURCE";
-                    break;
-                default:
-                    source_node_type = "UNKNOWN";
-                    break;
-            }
+            std::string source_node_type = get_rr_node_type_str(sample_rr_node_type);
             float average_overestimation = 0.0f;
             if (num_overestimations > 0)
                 average_overestimation = total_overestimation / (float) num_overestimations;
-            VTR_LOG("%18zu  %22g  %16s  %23zu  %29zu  %19g  %18g\n",
+            float average_path_cost = 0.0f;
+            float average_heur_cost = 0.0f;
+            if (num_targets > 0) {
+                average_path_cost = total_path_cost / (float) num_targets;
+                average_heur_cost = total_heur_cost / (float) num_targets;
+            }
+            VTR_LOG("%10zu  %20.3g  %11s  %12zu  %14.3g  %15.3g  %18zu  %14.3g  %14.3g\n",
                     num_trials,
                     max_difference,
                     source_node_type.c_str(),
                     num_targets,
+                    average_path_cost,
+                    average_heur_cost,
                     num_overestimations,
                     average_overestimation,
                     max_overestimation_this_iter);
@@ -385,7 +397,12 @@ bool route(const Netlist<>& net_list,
         }
 
     VTR_LOG("=================================================================\n");
-    VTR_LOG("Max difference between heuristic and actual: %g\n", max_difference);
+    VTR_LOG("Max difference between heuristic and actual: %.3g\n", max_difference);
+    for (size_t l = 0; l < max_difference_per_type.size(); l++) {
+        VTR_LOG("\t%6s: %.3g\n",
+                get_rr_node_type_str((t_rr_type)l).c_str(),
+                max_difference_per_type[l]);
+    }
     VTR_LOG("=================================================================\n");
     }
     // ========================================================================
