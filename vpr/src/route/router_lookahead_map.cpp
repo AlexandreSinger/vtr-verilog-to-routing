@@ -22,6 +22,7 @@
  */
 
 #include <cmath>
+#include <fstream>
 #include <vector>
 #include "connection_router_interface.h"
 #include "physical_types_util.h"
@@ -1077,9 +1078,76 @@ static void write_intra_cluster_router_lookahead(const std::string& file,
     writeMessageToFile(file, &builder);
 }
 
-void read_router_lookahead(const std::string& file) {
+void read_router_lookahead(const std::string& filename) {
     vtr::ScopedStartFinishTimer timer("Loading router wire lookahead map");
-    MmapFile f(file);
+
+    // HACK! Checking for Alex Poupakis' file type and loading it in.
+    if (filename.substr(filename.size() - 4, 4) == ".txt") {
+        // The code below was literally ripped from Alex Poupakis' example.
+        std::ifstream file(filename);
+        if (!file) {
+            std::cerr << "Failed to open file: " << filename << std::endl;
+            return;
+        }
+
+        std::string line;
+        size_t chan_index = 0;
+        size_t seg_index = 0;
+
+        // Variables to capture INFO metadata
+        size_t num_segment_types = 0, num_channels = 0, delta_xs = 0, delta_ys = 0;
+
+        while (std::getline(file, line)) {
+            if (line.empty()) continue;
+
+            if (line.rfind("INFO: Total:", 0) == 0) {
+                // Parse metadata
+                std::istringstream iss(line);
+                std::string info, total, label;
+                char comma;
+
+                iss >> info >> total >> label >> num_segment_types >> comma;
+                iss >> label >> num_channels >> comma;
+                iss >> label >> delta_xs >> comma;
+                iss >> label >> delta_ys;
+
+                // NOTE: Changes the sizes from 0 to 1 here!
+                f_wire_cost_map.resize({1, 1, num_channels, num_segment_types, delta_xs, delta_ys});
+            }
+            else if (line.rfind("INFO: ", 0) == 0) {
+                // Ignore
+            }
+            else if (line.rfind("SegTypeId", 0) == 0) {
+                // Parse segment and channel indices
+                std::istringstream iss(line);
+                std::string _, segment_name;
+                iss >> _ >> seg_index >> _ >> _ >> _ >> _ >> chan_index;
+            }
+            else {
+                // Parse data line: i, j : delay, congestion
+                size_t i, j;
+                float delay, congestion;
+                char _;
+
+                std::istringstream iss(line);
+                iss >> i >> _ >> j >> _ >> delay >> _ >> congestion;
+
+                // NOTE: Checked for rediculously high delays and clamp them to 0.
+                if (delay > 1e30)
+                    delay = 0.0f;
+                if (congestion > 1e30)
+                    congestion = 0.0f;
+
+                f_wire_cost_map[0][0][chan_index][seg_index][i][j].delay = delay;
+                f_wire_cost_map[0][0][chan_index][seg_index][i][j].congestion = congestion;
+            }
+        }
+
+        file.close();
+        return;
+    }
+
+    MmapFile f(filename);
 
     /* Increase reader limit to 1G words to allow for large files. */
     ::capnp::ReaderOptions opts = default_large_capnp_opts();
