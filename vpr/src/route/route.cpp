@@ -14,21 +14,21 @@
 #include "router_delay_profiling.h"
 #include "vtr_time.h"
 
-static std::string get_rr_node_type_str(t_rr_type type) {
+static std::string get_rr_node_type_str(e_rr_type type) {
     switch (type) {
-        case t_rr_type::CHANX:
+        case e_rr_type::CHANX:
             return "CHANX";
-        case t_rr_type::CHANY:
+        case e_rr_type::CHANY:
             return "CHANY";
-        case t_rr_type::IPIN:
+        case e_rr_type::IPIN:
             return "IPIN";
-        case t_rr_type::NUM_RR_TYPES:
+        case e_rr_type::NUM_RR_TYPES:
             return "NUM_RR_TYPES";
-        case t_rr_type::OPIN:
+        case e_rr_type::OPIN:
             return "OPIN";
-        case t_rr_type::SINK:
+        case e_rr_type::SINK:
             return "SINK";
-        case t_rr_type::SOURCE:
+        case e_rr_type::SOURCE:
             return "SOURCE";
         default:
             return "UNKNOWN";
@@ -281,11 +281,11 @@ bool route(const Netlist<>& net_list,
         std::vector<RRNodeId> sink_rr_nodes; 
         sink_rr_nodes.reserve(g_vpr_ctx.device().rr_graph.num_nodes());
         for (RRNodeId rr_node_id : g_vpr_ctx.device().rr_graph.nodes()) {
-            if (g_vpr_ctx.device().rr_graph.node_type(rr_node_id) == t_rr_type::SINK)
+            if (g_vpr_ctx.device().rr_graph.node_type(rr_node_id) == e_rr_type::SINK)
                 sink_rr_nodes.push_back(rr_node_id);
         }
 
-        std::vector<float> max_difference_per_type(t_rr_type::NUM_RR_TYPES, 0.0f);
+        std::vector<float> max_difference_per_type((int)e_rr_type::NUM_RR_TYPES, 0.0f);
 
         // Print some header information
         VTR_LOG("----------  --------------------  -----------  ------------  --------------  ---------------  ------------------  --------------  --------------\n");
@@ -309,9 +309,9 @@ bool route(const Netlist<>& net_list,
             // size_t offset = rng.irand(net_list.nets().size());
             // RRNodeId sample_rr_node = route_ctx.net_rr_terminals[*(net_list.nets().begin() + offset)][0];
             RRNodeId sample_rr_node(rng.irand(g_vpr_ctx.device().rr_graph.num_nodes()));
-            t_rr_type sample_rr_node_type = g_vpr_ctx.device().rr_graph.node_type(sample_rr_node);
-            if (g_vpr_ctx.device().rr_graph.node_type(sample_rr_node) == t_rr_type::SINK ||
-                g_vpr_ctx.device().rr_graph.node_type(sample_rr_node) == t_rr_type::IPIN) {
+            e_rr_type sample_rr_node_type = g_vpr_ctx.device().rr_graph.node_type(sample_rr_node);
+            if (g_vpr_ctx.device().rr_graph.node_type(sample_rr_node) == e_rr_type::SINK ||
+                g_vpr_ctx.device().rr_graph.node_type(sample_rr_node) == e_rr_type::IPIN) {
                 i++;
                 continue;
             }
@@ -346,7 +346,7 @@ bool route(const Netlist<>& net_list,
             float total_heur_cost = 0.0f;
             float max_overestimation_this_iter = 0.0f;
             for (RRNodeId rr_node_id : sink_rr_nodes) {
-                VTR_ASSERT_SAFE(g_vpr_ctx.device().rr_graph.node_type(rr_node_id) == t_rr_type::SINK);
+                VTR_ASSERT_SAFE(g_vpr_ctx.device().rr_graph.node_type(rr_node_id) == e_rr_type::SINK);
                 if (rr_node_id == sample_rr_node)
                     continue;
                 float path_delay = route_ctx.rr_node_route_inf[rr_node_id].backward_path_cost;
@@ -362,7 +362,7 @@ bool route(const Netlist<>& net_list,
                     total_overestimation += heuristic_delay - path_delay;
                     max_difference = std::max(max_difference, heuristic_delay - path_delay);
                     max_overestimation_this_iter = std::max(max_overestimation_this_iter, heuristic_delay - path_delay);
-                    max_difference_per_type[sample_rr_node_type] = std::max(max_difference_per_type[sample_rr_node_type], heuristic_delay - path_delay);
+                    max_difference_per_type[(int)sample_rr_node_type] = std::max(max_difference_per_type[(int)sample_rr_node_type], heuristic_delay - path_delay);
                  }
                 total_path_cost += path_delay;
                 total_heur_cost += heuristic_delay;
@@ -400,7 +400,7 @@ bool route(const Netlist<>& net_list,
     VTR_LOG("Max difference between heuristic and actual: %.3g\n", max_difference);
     for (size_t l = 0; l < max_difference_per_type.size(); l++) {
         VTR_LOG("\t%6s: %.3g\n",
-                get_rr_node_type_str((t_rr_type)l).c_str(),
+                get_rr_node_type_str((e_rr_type)l).c_str(),
                 max_difference_per_type[l]);
     }
     VTR_LOG("=================================================================\n");
