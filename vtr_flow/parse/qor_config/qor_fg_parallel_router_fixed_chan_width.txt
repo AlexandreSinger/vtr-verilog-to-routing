@@ -7,4 +7,5 @@ post_route_wirelength;vpr.out;\s*Total wirelength: (\d+)
 total_connection_pathsearch_time;vpr.out;.*Time spent on path search: (.*) seconds.
 route_runtime;vpr.out;Routing took (.*) seconds
 total_runtime;vpr.out;The entire flow of VPR took (.*) seconds
+max_heuristic_overestimation;vpr.out;Max difference between heuristic and actual: (.*)
 magic_cookie;vpr.out;Serial number \(magic cookie\) for the routing is: (.*)
