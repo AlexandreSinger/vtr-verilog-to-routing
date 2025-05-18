@@ -1156,6 +1156,15 @@ void read_router_lookahead(const std::string& filename) {
     auto map = reader.getRoot<VprMapLookahead>();
 
     ToNdMatrix<6, VprMapCostEntry, util::Cost_Entry>(&f_wire_cost_map, map.getCostMap(), ToCostEntry);
+
+    // HACK! Set all massive delays to 0 for now. MUST fix this.
+    for (size_t i = 0; i < f_wire_cost_map.size(); i++) {
+        util::Cost_Entry& cost_entry = f_wire_cost_map.get(i);
+        if (cost_entry.delay > 1e30)
+            cost_entry.delay = 0.0f;
+        if (cost_entry.congestion > 1e30)
+            cost_entry.congestion = 0.0f;
+    }
 }
 
 void write_router_lookahead(const std::string& file) {
