@@ -45,6 +45,35 @@ class PreClusterDelayCalculator : public tatum::DelayCalculator {
         } else {
             VTR_ASSERT(edge_type == tatum::EdgeType::INTERCONNECT);
 
+            // Get the src molecule.
+            AtomPinId src_atom_pin = netlist_lookup_.tnode_atom_pin(src_node);
+            AtomBlockId src_atom_id = netlist_.pin_block(src_atom_pin);
+            PackMoleculeId src_molecule = prepacker_.get_atom_molecule(src_atom_id);
+
+            // Get the sink molecule.
+            AtomPinId sink_atom_pin = netlist_lookup_.tnode_atom_pin(sink_node);
+            AtomBlockId sink_atom_id = netlist_.pin_block(sink_atom_pin);
+            PackMoleculeId sink_molecule = prepacker_.get_atom_molecule(sink_atom_id);
+
+            if (src_molecule == sink_molecule) {
+                // This edge is between two atoms in the same molecule.
+                return tatum::Time(inter_cluster_net_delay_ / 10.0f);
+            }
+ 
+            // Get the ID of any chains the src and sink are a part of.
+            MoleculeChainId src_molecule_chain_id = prepacker_.get_molecule(src_molecule).chain_id;
+            MoleculeChainId sink_molecule_chain_id = prepacker_.get_molecule(sink_molecule).chain_id;
+
+            if (src_molecule_chain_id.is_valid()) {
+                // The src molecule is a part of a carry chain.
+                if (src_molecule_chain_id == sink_molecule_chain_id) {
+                    // This edge is between two different molecules in the same
+                    // chain (i.e. this connection is between two clusters that
+                    // are part of the same chain).
+                    return tatum::Time(inter_cluster_net_delay_ / 10.0f);
+                }
+            }
+
             //External net delay
             return tatum::Time(inter_cluster_net_delay_);
         }
