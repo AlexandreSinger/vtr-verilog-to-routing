@@ -452,7 +452,8 @@ class B2BSolver : public AnalyticalSolver {
               int log_verbosity)
         : AnalyticalSolver(ap_netlist, atom_netlist, pre_cluster_timing_manager, ap_timing_tradeoff, log_verbosity)
         , device_grid_width_(device_grid.width())
-        , device_grid_height_(device_grid.height()) {}
+        , device_grid_height_(device_grid.height())
+        , pre_cluster_timing_manager_(pre_cluster_timing_manager) {}
 
     /**
      * @brief Perform an iteration of the B2B solver, storing the result into
@@ -626,6 +627,10 @@ class B2BSolver : public AnalyticalSolver {
     ///        loop so far. This includes creating the CG solver object and
     ///        actually solving for a solution.
     float total_time_spent_solving_linear_system_ = 0.0f;
+
+
+    // FIXME: Figure out how to pass this information.
+    const PreClusterTimingManager& pre_cluster_timing_manager_;
 };
 
 #endif // EIGEN_INSTALLED

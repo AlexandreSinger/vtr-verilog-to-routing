@@ -138,6 +138,10 @@ class PreClusterTimingManager {
         return timing_info_;
     }
 
+    float get_timing_arc_delay(AtomPinId sink_pin_id) const {
+        return timing_arc_delays_[sink_pin_id];
+    }
+
   private:
     /// @brief A valid flag used to signify if the pre-cluster timing manager
     ///        class has been initialized or not. For example, if the flow is
