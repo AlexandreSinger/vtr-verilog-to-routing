@@ -21,6 +21,7 @@
 #include "flat_placement_types.h"
 #include "partial_placement.h"
 #include "ap_netlist.h"
+#include "timing_info.h"
 #include "vpr_error.h"
 #include "vtr_assert.h"
 #include "vtr_time.h"
@@ -803,7 +804,8 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement) {
         size_t num_pins = netlist_.net_pins(net_id).size();
         VTR_ASSERT_SAFE_MSG(num_pins > 1, "net must have at least 2 pins");
 
-        double net_w = net_weights_[net_id];
+        // double net_w = net_weights_[net_id];
+        double net_w = 1.0f - ap_timing_tradeoff_;
 
         // Find the bounding blocks
         APNetBounds net_bounds = get_unique_net_bounds(net_id, p_placement, netlist_);
@@ -828,6 +830,27 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement) {
         // instead of in the for loop above.
         add_connection_to_system(net_bounds.max_x_blk, net_bounds.min_x_blk, num_pins, net_w, p_placement.block_x_locs, triplet_list_x, b_x);
         add_connection_to_system(net_bounds.max_y_blk, net_bounds.min_y_blk, num_pins, net_w, p_placement.block_y_locs, triplet_list_y, b_y);
+
+
+        // Timing Connections
+        // FIXME: Only do this if timing analysis is on.
+        APPinId driver_pin = netlist_.net_driver(net_id);
+        APBlockId driver_blk = netlist_.pin_block(driver_pin);
+        for (APPinId net_pin : netlist_.net_pins(net_id)) {
+            if (net_pin == driver_pin)
+                continue;
+            APBlockId sink_blk = netlist_.pin_block(net_pin);
+
+            double crit = pre_cluster_timing_manager_.get_timing_info().setup_pin_criticality(netlist_.pin_atom_pin(net_pin));
+            double weight = ap_timing_tradeoff_ * crit;
+            add_connection_to_system(driver_blk, sink_blk,
+                                     num_pins, weight,
+                                     p_placement.block_x_locs, triplet_list_x, b_x); 
+
+            add_connection_to_system(driver_blk, sink_blk,
+                                     num_pins, weight,
+                                     p_placement.block_y_locs, triplet_list_y, b_y); 
+        }
     }
 
     // Build the sparse connectivity matrices from the triplets.
