@@ -7,6 +7,7 @@
 
 #include "flat_placement_mass_calculator.h"
 #include <cstring>
+#include <queue>
 #include <vector>
 #include "ap_mass_report.h"
 #include "ap_netlist.h"
@@ -414,8 +415,112 @@ static PrimitiveVector calc_block_mass(APBlockId blk_id,
  */
 static void initialize_dim_manager(PrimitiveDimManager& dim_manager,
                                    const LogicalModels& models,
+                                   const std::vector<t_logical_block_type>& logical_block_types,
                                    const AtomNetlist& atom_netlist) {
     // Set the mapping between model IDs and Primitive Vector IDs
+
+    // Pattern-match for "one-hot" primitive modes (i.e. shared primitive dimensions).
+
+    // Populate a lookup between each model and the primitives that implement them.
+    // FIXME: Outline to another function.
+    VTR_LOG("Looking up the model primitives...\n");
+    vtr::vector<LogicalModelId, std::set<t_pb_type*>> model_primitives(models.all_models().size());
+    std::queue<t_pb_type*> pb_type_queue;
+    for (const t_logical_block_type& block_type : logical_block_types) {
+        pb_type_queue.push(block_type.pb_type);
+    }
+    while (!pb_type_queue.empty()) {
+        t_pb_type* pb_type = pb_type_queue.front();
+        pb_type_queue.pop();
+        if (pb_type == nullptr)
+            continue;
+        if (pb_type->is_primitive()) {
+            model_primitives[pb_type->model_id].insert(pb_type);
+            continue;
+        }
+
+        for (int mode_idx = 0; mode_idx < pb_type->num_modes; mode_idx++) {
+            const t_mode& mode = pb_type->modes[mode_idx];
+            for (int pb_child_idx = 0; pb_child_idx < mode.num_pb_type_children; pb_child_idx++) {
+                pb_type_queue.push(&mode.pb_type_children[pb_child_idx]);
+            }
+        }
+    }
+
+    // Search for the one-hot primitives.
+    VTR_LOG("Searching for one-hot primitives...\n");
+    // FIXME: Outline to another function.
+    struct OneHotPbType {
+        t_pb_type* pb_type;
+        std::set<LogicalModelId> shared_models;
+    };
+    std::vector<OneHotPbType> shared_models;
+    VTR_ASSERT(pb_type_queue.empty());
+    for (const t_logical_block_type& block_type : logical_block_types) {
+        pb_type_queue.push(block_type.pb_type);
+    }
+    while (!pb_type_queue.empty()) {
+        t_pb_type* pb_type = pb_type_queue.front();
+        pb_type_queue.pop();
+        if (pb_type == nullptr)
+            continue;
+        if (pb_type->is_primitive()) {
+            continue;
+        }
+
+        if (pb_type->num_modes > 1) {
+            bool is_one_hot = true;
+            std::set<LogicalModelId> contained_models;
+            // Check if every pb_type in each mode is single and unique.
+            for (int mode_idx = 0; mode_idx < pb_type->num_modes; mode_idx++) {
+                const t_mode& mode = pb_type->modes[mode_idx];
+                if (mode.num_pb_type_children != 1) {
+                    is_one_hot = false;
+                    break;
+                }
+                t_pb_type* mode_child_pb = &mode.pb_type_children[0];
+                if (mode_child_pb->num_pb > 1 || !mode_child_pb->is_primitive()) {
+                    is_one_hot = false;
+                    break;
+                }
+                contained_models.insert(mode_child_pb->model_id);
+            }
+
+            if (is_one_hot) {
+                OneHotPbType one_hot_pb_type_info;
+                one_hot_pb_type_info.pb_type = pb_type;
+                one_hot_pb_type_info.shared_models = std::move(contained_models);
+                shared_models.push_back(std::move(one_hot_pb_type_info));
+
+                // Do not explore the children of this pb_type.
+                continue;
+            }
+        }
+    
+        for (int mode_idx = 0; mode_idx < pb_type->num_modes; mode_idx++) {
+            const t_mode& mode = pb_type->modes[mode_idx];
+            for (int pb_child_idx = 0; pb_child_idx < mode.num_pb_type_children; pb_child_idx++) {
+                pb_type_queue.push(&mode.pb_type_children[pb_child_idx]);
+            }
+        }
+    }
+
+    // Log the shared models.
+    VTR_LOG("SHARED MODELS:\n");
+    for (const OneHotPbType& one_hot_pb_type_info : shared_models) {
+        VTR_LOG("\t%s:\n", one_hot_pb_type_info.pb_type->name);
+        for (LogicalModelId model_id : one_hot_pb_type_info.shared_models) {
+            VTR_LOG("\t\t%s\n", models.model_name(model_id).c_str());
+        }
+    }
+
+    vtr::vector<LogicalModelId, bool> is_shared_model(models.all_models().size(), false);
+    for (const OneHotPbType& one_hot_pb_type_info : shared_models) {
+        for (LogicalModelId model_id : one_hot_pb_type_info.shared_models) {
+            is_shared_model[model_id] = true;
+        }
+    }
+
 
     // Count the number of occurences of each model in the netlist.
     vtr::vector<LogicalModelId, unsigned> num_model_occurence(models.all_models().size(), 0);
@@ -430,11 +535,44 @@ static void initialize_dim_manager(PrimitiveDimManager& dim_manager,
     //       as what the user provided in the arch file in the event of a tie.
     std::vector<LogicalModelId> logical_models(models.all_models().begin(), models.all_models().end());
     std::stable_sort(logical_models.begin(), logical_models.end(), [&](LogicalModelId a, LogicalModelId b) {
+        // FIXME: Shared models should accumulate the occurences...
         return num_model_occurence[a] > num_model_occurence[b];
     });
 
     // Create a primitive vector dim for each model.
     for (LogicalModelId model_id : logical_models) {
+        if (num_model_occurence[model_id] == 0)
+            continue;
+        if (is_shared_model[model_id])
+            continue;
+        dim_manager.create_dim(model_id, models.model_name(model_id));
+    }
+    for (const OneHotPbType& one_hot_pb_type_info : shared_models) {
+        // Create a unique name for the dim. This is used for debugging.
+        std::string dim_name = one_hot_pb_type_info.pb_type->name;
+        dim_name += "_ap_shared[";
+        size_t index = 0;
+        for (LogicalModelId model_id : one_hot_pb_type_info.shared_models) {
+            dim_name += models.model_name(model_id);
+            dim_name += "]";
+            if (index != one_hot_pb_type_info.shared_models.size() - 1)
+                dim_name += "[";
+            index++;
+        }
+        PrimitiveVectorDim new_dim = dim_manager.create_empty_dim(dim_name);
+        for (LogicalModelId model_id : one_hot_pb_type_info.shared_models) {
+            VTR_ASSERT(!dim_manager.get_model_dim(model_id).is_valid());
+            dim_manager.add_model_to_dim(model_id, new_dim);
+        }
+    }
+    // Now add all unused and non-shared models
+    for (LogicalModelId model_id : logical_models) {
+        if (num_model_occurence[model_id] != 0)
+            continue;
+        if (is_shared_model[model_id])
+            continue;
+
+        VTR_ASSERT(!dim_manager.get_model_dim(model_id).is_valid());
         dim_manager.create_dim(model_id, models.model_name(model_id));
     }
 }
@@ -454,6 +592,7 @@ FlatPlacementMassCalculator::FlatPlacementMassCalculator(const APNetlist& ap_net
     // Initialize the mapping between model IDs and Primitive Vector dims
     initialize_dim_manager(primitive_dim_manager_,
                            models,
+                           logical_block_types,
                            atom_netlist);
 
     // Precompute the capacity of each logical block type.
