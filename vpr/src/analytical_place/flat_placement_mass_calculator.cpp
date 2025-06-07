@@ -11,56 +11,30 @@
 #include <vector>
 #include "ap_mass_report.h"
 #include "ap_netlist.h"
-#include "arch_types.h"
 #include "atom_netlist.h"
 #include "atom_netlist_fwd.h"
-#include "device_grid.h"
-#include "globals.h"
 #include "logic_types.h"
 #include "physical_types.h"
 #include "prepack.h"
 #include "primitive_dim_manager.h"
 #include "primitive_vector.h"
-#include "vpr_utils.h"
 #include "vtr_log.h"
 #include "vtr_vector.h"
 
-/**
- * @brief Get the scalar mass of the given model (primitive type).
- *
- * A model with a higher mass will take up more space in its bin which may force
- * more spreading of that type of primitive.
- *
- * TODO: This will be made more complicated later. Models may be weighted based
- *       on some factors.
- */
-static float get_model_mass(LogicalModelId model_id) {
-    // If this model is a LUT
-    if (model_id == LogicalModels::MODEL_NAMES_ID) {
-        // FIXME: Remove global reference!
-        const LogicalModels& models = g_vpr_ctx.device().arch->models;
-        // Go through each of the ports (I think there should only be 1) and count
-        // the max number of pins.
-        int lut_size = 0;
-        t_model_ports* curr_input = models.get_model(model_id).inputs;
-        while (curr_input != nullptr) {
-            lut_size += curr_input->size;
-            curr_input = curr_input->next;
-        }
+static bool is_primitive_memory_pb_type(const t_pb_type* pb_type) {
+    VTR_ASSERT_SAFE(pb_type != nullptr);
 
-        // FIXME: Is this possible?
-        if (lut_size == 0)
-            return 1.f;
+    if (pb_type->num_modes != 0)
+        return false;
 
-        return 1.0f * lut_size;
-    }
-    // Currently, all models have a mass of one.
-    (void)model_id;
-    return 1.f;
+    if (pb_type->class_type != MEMORY_CLASS)
+        return false;
+
+    return true;
 }
 
 static float calc_pb_type_cost(const t_pb_type* pb_type) {
-    if (pb_type->num_modes == 0 && pb_type->class_type == MEMORY_CLASS) {
+    if (is_primitive_memory_pb_type(pb_type)) {
         int num_address_pins = 0;
         int num_data_out_pins = 0;
         int num_address1_pins = 0;
@@ -122,44 +96,44 @@ static float calc_pb_type_cost(const t_pb_type* pb_type) {
     return pb_cost;
 }
 
-// FIXME: This should really take in a molecule. If we knew the pack pattern,
-//        we could recognize carry chains.
 static float get_atom_mass(AtomBlockId blk_id, const Prepacker& prepacker, const AtomNetlist& atom_netlist) {
+
+    // Get the mass of the most likely pb_type which this atom will be packed into.
     const t_pb_graph_node* primitive = prepacker.get_expected_lowest_cost_pb_gnode(blk_id);
+    float mass = calc_pb_type_cost(primitive->pb_type);
 
-    return calc_pb_type_cost(primitive->pb_type);
-    // return compute_primitive_base_cost(primitive);
-
-    LogicalModelId blk_model = atom_netlist.block_model(blk_id);
-    // If this model is a LUT
-    if (blk_model == LogicalModels::MODEL_NAMES_ID) {
-        // NOTE: See base/read_circuit.cpp
-        auto in_ports = atom_netlist.block_input_ports(blk_id);
-        VTR_ASSERT_MSG(in_ports.size() <= 1,
-                       "Expected number of input ports for LUT to be 0 or 1");
-        int lut_size = 0;
-        if (in_ports.size() == 1) {
-            // Use the number of pins in the input port to determine the
-            // size of the LUT.
-            auto port_id = *in_ports.begin();
-            lut_size = atom_netlist.port_pins(port_id).size();
+    // Since this atom may be part of a molecule, we can use some information
+    // about the rest of the molecule to create a more accurate cost.
+    // If this primitive is not a memory, then the cost is equal to the number
+    // of pins used by the primitive. Some of these pins will be absorbed fully
+    // within the cluster due to being part of a molecule. The cost should be
+    // adjusted to account for this.
+    if (!is_primitive_memory_pb_type(primitive->pb_type)) {
+        // Go through each of the atoms pins and check if any of them are fully
+        // absorbed into the molecule. These will not contribute to the cost.
+        PackMoleculeId mol_id = prepacker.get_atom_molecule(blk_id);
+        unsigned absorbed_pins = 0;
+        for (AtomPinId atom_pin_id : atom_netlist.block_pins(blk_id)) {
+            AtomNetId atom_net_id = atom_netlist.pin_net(atom_pin_id);
+            bool all_pins_absorbed = true;
+            for (AtomPinId atom_net_pin_id : atom_netlist.net_pins(atom_net_id)) {
+                AtomBlockId pin_blk_id = atom_netlist.pin_block(atom_net_pin_id);
+                if (prepacker.get_atom_molecule(pin_blk_id) != mol_id) {
+                    all_pins_absorbed = false;
+                    break;
+                }
+            }
+            if (all_pins_absorbed)
+                absorbed_pins++;
         }
-
-        // FIXME: This is wicked dangerous! Need to check if inputs exists.
-        // lut_size = std::max(lut_size, blk_model->inputs->min_size);
-        lut_size = std::max(lut_size, 5);
-        // FIXME: I think we need to clamp the lut size between the min and max
-        //        number of inputs that its model can have...
-
-        // If this is a zero LUT, just pretend that it is a 1-LUT.
-        if (lut_size == 0)
-            return 1.f;
-
-        return lut_size;
+        mass -= static_cast<float>(absorbed_pins);
     }
 
-    // Anything we do not recognize, just set to 1.
-    return 1.f;
+    // Currently, the code does not handle well with fractional masses. Rounding
+    // up to the nearest whole number.
+    mass = std::ceil(mass);
+
+    return mass;
 }
 
 // This method is being forward-declared due to the double recursion below.
@@ -183,10 +157,6 @@ static PrimitiveVector calc_mode_capacity(const t_mode& mode,
     for (int pb_child_idx = 0; pb_child_idx < mode.num_pb_type_children; pb_child_idx++) {
         const t_pb_type& pb_type = mode.pb_type_children[pb_child_idx];
         PrimitiveVector pb_capacity = calc_pb_type_capacity(&pb_type, memory_model_dims, dim_manager);
-        // FIXME: This was moved.
-        // A mode may contain multiple pbs of the same type, multiply the
-        // capacity.
-        // pb_capacity *= pb_type.num_pb;
         capacity += pb_capacity;
     }
     return capacity;
@@ -240,31 +210,6 @@ static PrimitiveVector calc_pb_type_capacity(const t_pb_type* pb_type,
     }
 
     capacity *= pb_type->num_pb;
-    // This is the pin-sharing scaling factor. If there are multiple pbs in the
-    // same pb_type, they are likely to share inputs.
-    // FIXME: We may be able to actually calculate this number based on the
-    //        architecture file.
-    /*
-    if (pb_type->num_pb > 1)
-        capacity *= 0.75f;
-        */
-
-    // FIXME: get the number above by taking the number of pins of the parent
-    //        pb / (num_pins in this pb * num_pb)
-    /*
-    if (pb_type->parent_mode != nullptr && pb_type->parent_mode->parent_pb_type != nullptr) {
-        t_pb_type* parent_pb_type = pb_type->parent_mode->parent_pb_type;
-
-        float curr_pb_score = pb_type->num_input_pins + pb_type->num_output_pins + pb_type->num_clock_pins;
-        curr_pb_score *= pb_type->num_pb;
-
-        float parent_pb_score = parent_pb_type->num_input_pins + parent_pb_type->num_output_pins + parent_pb_type->num_clock_pins;
-        // FIXME: Need to handle siblings. If there are other children of the parent,
-        //        they too will need pins.
-        //        I think putting this calculation in the parent instead of the child
-        //        is a much much better idea.
-    }
-    */
 
     return capacity;
 }
@@ -282,16 +227,6 @@ static PrimitiveVector calc_logical_block_type_capacity(const t_logical_block_ty
     PrimitiveVector capacity = calc_pb_type_capacity(logical_block_type.pb_type,
                                                      memory_model_dims,
                                                      dim_manager);
-
-    // The current pb only has a set number of pins. Therefore, each dimension
-    // of the primitive pb cannot have a higher number of pins than this.
-    // Clamp the capacity by the score of this pb.
-    // FIXME: Handle shared pins
-    // t_pb_type* pb_type = logical_block_type.pb_type;
-    // float total_curr_score = pb_type->num_input_pins + pb_type->num_output_pins + pb_type->num_clock_pins;
-    // for (int dim : capacity.get_non_zero_dims()) {
-    //     capacity.set_dim_val(dim, std::min(capacity.get_dim_val(dim), total_curr_score));
-    // }
 
     // The primitive capacity of a logical block is the primitive capacity of
     // its root pb.
@@ -369,42 +304,18 @@ static PrimitiveVector calc_block_mass(APBlockId blk_id,
         // safely be ignored.
         if (!atom_blk_id.is_valid())
             continue;
+
+        // Get the dimension in the vector to add value to.
         LogicalModelId model_id = atom_netlist.block_model(atom_blk_id);
         VTR_ASSERT_SAFE(model_id.is_valid());
         PrimitiveVectorDim dim = dim_manager.get_model_dim(model_id);
         VTR_ASSERT(dim.is_valid());
-        // FIXME: Get atom mass should not return a float.
+
+        // Get the amount of mass in this dimension to add.
         float atom_mass = get_atom_mass(atom_blk_id, prepacker, atom_netlist);
-        // Go through each of the atoms pins and check if any of them are fully
-        // absorbed into the molecule. These will not contribute to the cost.
-        // FIXME: This can be computed better.
-        // float absorbed_pins = 0.0f;
-        // for (AtomPinId atom_pin_id : atom_netlist.block_pins(atom_blk_id)) {
-        //     AtomNetId atom_net_id = atom_netlist.pin_net(atom_pin_id);
-        //     bool all_pins_absorbed = true;
-        //     for (AtomPinId atom_net_pin_id : atom_netlist.net_pins(atom_net_id)) {
-        //         AtomBlockId pin_blk_id = atom_netlist.pin_block(atom_net_pin_id);
-        //         if (prepacker.get_atom_molecule(pin_blk_id) != mol_id) {
-        //             all_pins_absorbed = false;
-        //             break;
-        //         }
-        //     }
-        //     if (all_pins_absorbed)
-        //         absorbed_pins++;
-        // }
-        // float total_cost = atom_mass - absorbed_pins;
-        // FIXME: HACK! Found that for VTR architecture, just dividing by 6
-        //        puts the values in range. Should instead actually count how
-        //        much data is stored within the memory. This can be stored in
-        //        the get_atom_mass class.
-        if (prepacker.get_expected_lowest_cost_pb_gnode(atom_blk_id)->pb_type->class_type == MEMORY_CLASS) {
-            // atom_mass /= 6.0f;
-        }
-        // FIXME: Currently fractional costs cause problems due to numerical
-        //        instability. Round up to nearest whole number. We round up here
-        //        since we never want the cost to become zero.
-        float total_cost = std::ceil(atom_mass);
-        mass.add_val_to_dim(total_cost, dim);
+
+        // Add mass to the dimension.
+        mass.add_val_to_dim(atom_mass, dim);
     }
     return mass;
 }
