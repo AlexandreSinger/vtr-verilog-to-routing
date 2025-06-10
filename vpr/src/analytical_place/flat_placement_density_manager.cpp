@@ -96,6 +96,13 @@ FlatPlacementDensityManager::FlatPlacementDensityManager(const APNetlist& ap_net
                 // Store the index of the physical tile type into a map to be
                 // used to compute the capacity.
                 bin_phy_tile_type_idx.insert(new_bin_id, tile_type->index);
+
+                // FIXME: DO THIS BETTER. Build a map and then write when done.
+                float target_density = 1.0f;
+                if (tile_type->name == "clb" || tile_type->name == "LAB")
+                    target_density = 0.7f;
+                bin_target_density_.push_back(target_density);
+                VTR_ASSERT(bin_target_density_[new_bin_id] = target_density);
             }
         }
     }

@@ -168,6 +168,11 @@ class FlatPlacementDensityManager {
         return bin_underfill_[bin_id];
     }
 
+    inline float get_bin_target_density(FlatPlacementBinId bin_id) const {
+        VTR_ASSERT_SAFE(bin_id.is_valid());
+        return bin_target_density_[bin_id];
+    }
+
     /**
      * @brief Returns true of the given bin is overfilled (it contains too much
      *        mass and is over capacity).
@@ -291,6 +296,8 @@ class FlatPlacementDensityManager {
     ///        in the netlist. If a dimension is used, its value will be set to
     ///        1 in this vector, and 0 otherwise.
     PrimitiveVector used_dims_mask_;
+
+    vtr::vector<FlatPlacementBinId, float> bin_target_density_;
 
     /// @brief The verbosity of log messages in this class.
     const int log_verbosity_;

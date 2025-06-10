@@ -846,6 +846,10 @@ BiPartitioningPartialLegalizer::BiPartitioningPartialLegalizer(
             // Get the capacity of the bin for this dim.
             float cap = density_manager_->get_bin_capacity(bin_id).get_dim_val(dim);
             VTR_ASSERT_SAFE(cap >= 0.0f);
+
+            float target_density = density_manager_->get_bin_target_density(bin_id);
+            cap *= target_density;
+
             // Bins may be large, but the prefix sum assumes a 1x1 grid of
             // values. Normalize by the area of the bin to turn this into
             // a 1x1 bin equivalent.
