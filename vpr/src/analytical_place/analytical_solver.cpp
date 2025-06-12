@@ -844,6 +844,8 @@ std::pair<float, float> B2BSolver::get_delay_derivative(APBlockId driver_blk,
     //       a really large value (which it does when an entry does not exist).
     //       Its very unlikely that the delay across a device will ever be this
     //       large.
+    if (current_edge_delay > 100000)
+        return std::make_pair(0.0f, 0.0f);
     VTR_ASSERT(current_edge_delay < 100000);
 
     // Get the delays of going from the driver block to the blocks directly
@@ -993,7 +995,7 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
             // We want the criticality to get sharper over iterations.
             double crit = pre_cluster_timing_manager_.get_timing_info().setup_pin_criticality(netlist_.pin_atom_pin(net_pin));
             double crit_exp = 9.0;
-            crit = std::pow(crit, crit_exp);
+            double exponentiated_crit = std::pow(crit, crit_exp);
 
             float timing_slope_fac = 0.01f;
             d_delay_x *= 1e9;
@@ -1004,11 +1006,11 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
             //   I am pretty sure it should be 2 here.
             double weight = ap_timing_tradeoff_;
             add_connection_to_system(driver_blk, sink_blk,
-                                     2 /*num_pins*/, weight * ((crit * 1.0f) + (timing_slope_fac * d_delay_x)),
+                                     2 /*num_pins*/, weight * ((exponentiated_crit * 1.0f) + ((1.0f + crit) * timing_slope_fac * d_delay_x)),
                                      p_placement.block_x_locs, triplet_list_x, b_x); 
 
             add_connection_to_system(driver_blk, sink_blk,
-                                     2 /*num_pins*/, weight * ((crit * 1.0f) + (timing_slope_fac * d_delay_y)),
+                                     2 /*num_pins*/, weight * ((exponentiated_crit * 1.0f) + ((1.0f + crit) * timing_slope_fac * d_delay_y)),
                                      p_placement.block_y_locs, triplet_list_y, b_y); 
         }
     }

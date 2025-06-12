@@ -308,6 +308,10 @@ static void update_timing_info_with_gp_placement(PreClusterTimingManager& pre_cl
                                               0 /*from_pin*/,
                                               sink_block_loc,
                                               0 /*to_pin*/);
+        // FIXME: Need a better way of distinguishing if the delay has a valid
+        //        value...
+        if (delay > 100000)
+            continue;
 
         // Get the atom pin associated with this AP pin (i.e. the one the AP
         // netlist is modeling).
