@@ -551,6 +551,10 @@ class B2BSolver : public AnalyticalSolver {
                                   std::vector<Eigen::Triplet<double>>& triplet_list,
                                   Eigen::VectorXd& b);
 
+    std::pair<float, float> get_delay_derivative(APBlockId driver_blk,
+                                                 APBlockId sink_blk,
+                                                 const PartialPlacement& p_placement);
+
     /**
      * @brief Initializes the linear system with the given partial placement.
      *
