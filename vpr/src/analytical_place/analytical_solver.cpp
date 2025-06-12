@@ -817,9 +817,9 @@ std::pair<float, float> B2BSolver::get_delay_derivative(APBlockId driver_blk,
     //        should handle this better.
     int tile_dx = sink_block_loc.x - driver_block_loc.x;
     int tile_dy = sink_block_loc.y - driver_block_loc.y;
-    if (tile_dx == 0 && tile_dy == 0) {
-        return std::make_pair(current_edge_delay, current_edge_delay);
-    }
+    // if (tile_dx == 0 && tile_dy == 0) {
+    //     return std::make_pair(current_edge_delay, current_edge_delay);
+    // }
 
     float left_edge_delay = -1.0f;
     float right_edge_delay = -1.0f;
