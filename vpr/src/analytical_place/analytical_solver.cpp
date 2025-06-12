@@ -992,21 +992,23 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
 
             // We want the criticality to get sharper over iterations.
             double crit = pre_cluster_timing_manager_.get_timing_info().setup_pin_criticality(netlist_.pin_atom_pin(net_pin));
-            // FIXME: Clean this up.
-            double crit_exp = 1.0 + (static_cast<double>(iteration) / 1.0);
-            crit_exp = 9;
+            double crit_exp = 9.0;
             crit = std::pow(crit, crit_exp);
+
+            float timing_slope_fac = 0.01f;
+            d_delay_x *= 1e9;
+            d_delay_y *= 1e9;
 
             // FIXME: Investigate the num_pins term. This looks more likea a clique
             //        formulation.
             //   I am pretty sure it should be 2 here.
-            double weight = ap_timing_tradeoff_ * crit;
+            double weight = ap_timing_tradeoff_;
             add_connection_to_system(driver_blk, sink_blk,
-                                     2 /*num_pins*/, weight * (1.0f + d_delay_x),
+                                     2 /*num_pins*/, weight * ((crit * 1.0f) + (timing_slope_fac * d_delay_x)),
                                      p_placement.block_x_locs, triplet_list_x, b_x); 
 
             add_connection_to_system(driver_blk, sink_blk,
-                                     2 /*num_pins*/, weight * (1.0f + d_delay_y),
+                                     2 /*num_pins*/, weight * ((crit * 1.0f) + (timing_slope_fac * d_delay_y)),
                                      p_placement.block_y_locs, triplet_list_y, b_y); 
         }
     }
