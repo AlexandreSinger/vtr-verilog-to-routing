@@ -791,109 +791,139 @@ std::pair<float, float> B2BSolver::get_delay_derivative(APBlockId driver_blk,
                                                         APBlockId sink_blk,
                                                         const PartialPlacement& p_placement) {
 
-    float flat_dx = p_placement.block_x_locs[sink_blk] - p_placement.block_x_locs[driver_blk];
-    float flat_dy = p_placement.block_y_locs[sink_blk] - p_placement.block_y_locs[driver_blk];
+    // Get the flat distance from the driver block to the sink block.
+    // NOTE: Here we take the magnitude of the difference since we assume that
+    //       the delay is symmetric (same delay regardless if you are going left
+    //       or right for example). This simplifies the code below some by having
+    //       us only focus on the positive axis.
+    float flat_dx = std::abs(p_placement.block_x_locs[sink_blk] - p_placement.block_x_locs[driver_blk]);
+    float flat_dy = std::abs(p_placement.block_y_locs[sink_blk] - p_placement.block_y_locs[driver_blk]);
 
-    // Get the derivative of the delay at this point.
+    // TODO: Handle 3D FPGAs for this method.
+    int layer_num = 0;
+    VTR_ASSERT_SAFE_MSG(p_placement.block_layer_nums[driver_blk] == layer_num &&
+                        p_placement.block_layer_nums[sink_blk] == layer_num,
+                        "3D FPGAs not supported yet in the B2B solver");
+
+    // Get the physical tile location of the SOLVED driver block. The PlaceDelayModel
+    // may use this position to determine the physical tile the wire is coming from.
+    // When the placement is being solved, the driver may be moved to a physical tile
+    // which cannot implement any wires and the delays become infinite. By using the
+    // solved position of the driver block, we ensure that the delays always exist
+    // (assuming the partial legalizer only places blocks in locations that a block
+    // can be implemented, which it currently does).
     t_physical_tile_loc driver_block_loc(block_x_locs_legalized[driver_blk],
                                          block_y_locs_legalized[driver_blk],
-                                         p_placement.block_layer_nums[driver_blk]);
-    t_physical_tile_loc sink_block_loc(block_x_locs_legalized[driver_blk] + flat_dx,
-                                         block_y_locs_legalized[driver_blk] + flat_dy,
-                                         p_placement.block_layer_nums[sink_blk]);
+                                         layer_num);
 
-    // FIXME: To make this more clear, we should be able to directly access the
-    //        data structure in place delay model.
-    float current_edge_delay = place_delay_model_->delay(driver_block_loc,
-                                                         0,
-                                                         sink_block_loc,
-                                                         0);
-    VTR_ASSERT(current_edge_delay < 100);
+    // Get the physical tle location of the sink block, relative to the driver block.
+    // Based on the current implementation of the PlaceDelayModel, the location of this
+    // block does not actually matter, only the difference in x and y position is used.
+    // Hence, it is ok if this position is off the device, so long as the difference
+    // in x/y is not larger than the width/height of the device.
+    t_physical_tile_loc sink_block_loc(driver_block_loc.x + flat_dx,
+                                       driver_block_loc.y + flat_dy,
+                                       layer_num);
 
-    // If the driver and sink are within the same tile, return the current edge
-    // delay (the minimum delay within the tile).
-    // TODO: Investigate interpolating this with the cost of leaving the tile.
-    // FIXME: Investigate directly turning this off now. The following code
-    //        should handle this better.
     int tile_dx = sink_block_loc.x - driver_block_loc.x;
     int tile_dy = sink_block_loc.y - driver_block_loc.y;
-    // if (tile_dx == 0 && tile_dy == 0) {
-    //     return std::make_pair(current_edge_delay, current_edge_delay);
-    // }
-
-    float left_edge_delay = -1.0f;
-    float right_edge_delay = -1.0f;
     VTR_ASSERT_SAFE(tile_dx < (int)device_grid_width_);
-    // FIXME: These gaurds are not necessary! And actually they are wrong, we just need dx
-    //        to be within bounds (which it always must be!
-    // if (sink_block_loc.x < (int)device_grid_width_ - 1) {
-        right_edge_delay = place_delay_model_->delay(driver_block_loc,
-                                              0,
-                                              {sink_block_loc.x + 1, sink_block_loc.y, sink_block_loc.layer_num},
-                                              0);
-    // }
-    // if (sink_block_loc.x > 0) {
-        left_edge_delay = place_delay_model_->delay(driver_block_loc,
-                                              0,
-                                              {sink_block_loc.x - 1, sink_block_loc.y, sink_block_loc.layer_num},
-                                              0);
-    // }
+    VTR_ASSERT_SAFE(tile_dy < (int)device_grid_height_);
+
+    // Get the delay of a wire going from the given driver block location to the
+    // given sink block location. This should only use the physical tile type of
+    // the driver block location and the dx / dy of the positions to compute
+    // delay.
+    float current_edge_delay = place_delay_model_->delay(driver_block_loc,
+                                                         0 /*from_pin*/,
+                                                         sink_block_loc,
+                                                         0 /*to_pin*/);
+
+    // TODO: Find a better way to do this assert. This assert is just checking
+    //       to ensure that the place delay model is not setting the delay to
+    //       a really large value (which it does when an entry does not exist).
+    //       Its very unlikely that the delay across a device will ever be this
+    //       large.
+    VTR_ASSERT(current_edge_delay < 100000);
+
+    // Get the delays of going from the driver block to the blocks directly
+    // surrounding the sink block (one tile above, below, left, and right).
+    // These will be used to compute the derivative.
+    t_physical_tile_loc right_block_loc(sink_block_loc.x + 1,
+                                        sink_block_loc.y,
+                                        sink_block_loc.layer_num);
+    t_physical_tile_loc left_block_loc(sink_block_loc.x - 1,
+                                       sink_block_loc.y,
+                                       sink_block_loc.layer_num);
+    t_physical_tile_loc upper_block_loc(sink_block_loc.x,
+                                        sink_block_loc.y + 1,
+                                        sink_block_loc.layer_num);
+    t_physical_tile_loc lower_block_loc(sink_block_loc.x,
+                                        sink_block_loc.y - 1,
+                                        sink_block_loc.layer_num);
+
+    float right_edge_delay = place_delay_model_->delay(driver_block_loc,
+                                                       0 /*from_pin*/,
+                                                       right_block_loc,
+                                                       0 /*to_pin*/);
+    float left_edge_delay = place_delay_model_->delay(driver_block_loc,
+                                                      0 /*from_pin*/,
+                                                      left_block_loc,
+                                                      0 /*to_pin*/);
+    float upper_edge_delay = place_delay_model_->delay(driver_block_loc,
+                                                       0 /*from_pin*/,
+                                                       upper_block_loc,
+                                                       0 /*to_pin*/);
+    float lower_edge_delay = place_delay_model_->delay(driver_block_loc,
+                                                       0 /*from_pin*/,
+                                                       lower_block_loc,
+                                                       0 /*to_pin*/);
+
+    // Use Finite Differences to compute the instantanious derivative of delay
+    // with respect to tile position at this current distance from the driver
+    // block to the sink block.
+    //
+    // Finite Differences are used to compute the derivative of a discrete
+    // function at a given point.
+    //
+    // To compute the derivative of a discrete function at a point, we get the
+    // difference in delay one tile ahead of the current point (the forward
+    // difference) and one tile behind the current point (the backward difference).
+    // We can then approximate the derivative by averaging the forward and backward
+    // differences to get what is called the central difference.
     float forward_difference_x = right_edge_delay - current_edge_delay;
     float backward_difference_x = current_edge_delay - left_edge_delay;
     float central_difference_x = (forward_difference_x + backward_difference_x) / 2.0f;
-    // The delay model is symmetric, therefore the central difference will always be zero.
-    // Use the forward difference arbitrarily.
-    if (tile_dx == 0)
-        central_difference_x = std::max(forward_difference_x, backward_difference_x);
 
-    float d_delay_x = 0.0f;
-    if (left_edge_delay > 0.0f && right_edge_delay > 0.0f) {
-        d_delay_x = central_difference_x;
-    } else if (left_edge_delay > 0.0f) {
-        d_delay_x = backward_difference_x;
-    } else if (right_edge_delay > 0.0f) {
-        VTR_ASSERT_SAFE(right_edge_delay > 0.0f);
-        d_delay_x = forward_difference_x;
-    }
-
-
-    float upper_edge_delay = -1.0f;
-    float lower_edge_delay = -1.0f;
-    VTR_ASSERT_SAFE(tile_dy < (int)device_grid_height_);
-    // if (sink_block_loc.y < (int)device_grid_height_ - 1) {
-        upper_edge_delay = place_delay_model_->delay(driver_block_loc,
-                                              0,
-                                              {sink_block_loc.x, sink_block_loc.y + 1, sink_block_loc.layer_num},
-                                              0);
-    // }
-    // if (sink_block_loc.x > 0) {
-        lower_edge_delay = place_delay_model_->delay(driver_block_loc,
-                                              0,
-                                              {sink_block_loc.x, sink_block_loc.y - 1, sink_block_loc.layer_num},
-                                              0);
-    // }
     float forward_difference_y = upper_edge_delay - current_edge_delay;
     float backward_difference_y = current_edge_delay - lower_edge_delay;
     float central_difference_y = (forward_difference_y + backward_difference_y) / 2.0f;
-    if (tile_dy == 0)
-        central_difference_y = std::max(forward_difference_y, backward_difference_y);
 
-    float d_delay_y = 0.0f;
-    if (lower_edge_delay > 0.0f && upper_edge_delay > 0.0f) {
-        d_delay_y = central_difference_y;
-    } else if (lower_edge_delay > 0.0f) {
-        d_delay_y = backward_difference_y;
-    } else if (upper_edge_delay > 0.0f) {
-        // FIXME: The map router lookahead definately has a bug. Found that the
-        //        upper edge delay is sometimes negative when it shouldn't be.
-        // NOTE: This was likely fixed. Now I think its impossible for any of
-        //       these values to be negative.
-        VTR_ASSERT_SAFE(upper_edge_delay > 0.0f);
+    // Set the resulting derivative to be equal to the central difference.
+    float d_delay_x = central_difference_x;
+    float d_delay_y = central_difference_y;
+
+    // For approximating the derivative of our PlaceDelayModel, there is a special
+    // case when the distance between the driver and sink are 0 in x or y. Since
+    // our delay models are symmetric, the forward and backward difference will
+    // be equal in magnitude and opposite. This means the central difference will
+    // be 0. This is not good since it would cause the objective to ignore the
+    // delay of blocks within the same cluster (making them more incentivized to
+    // not be in the same cluster together). To prevent this, we set the derivative
+    // to be the forward difference in that case. It must be the forward difference
+    // since the backward difference will likely be negative. This basically sets
+    // the derivative to be the penalty for putting the driver and sink in different
+    // tiles.
+    if (tile_dx == 0) {
+        VTR_ASSERT_SAFE_MSG(forward_difference_x == -1.0f * backward_difference_x,
+                            "Delay model expected to be symmetric");
+        d_delay_x = forward_difference_x;
+    }
+    if (tile_dy == 0) {
+        VTR_ASSERT_SAFE_MSG(forward_difference_y == -1.0f * backward_difference_y,
+                            "Delay model expected to be symmetric");
         d_delay_y = forward_difference_y;
     }
-    // FIXME: Handle the case when both lower and upper edge delay are negative.
-    //      Maybe just do the gross delta delay over distance.
-
 
     return std::make_pair(d_delay_x, d_delay_y);
 }
