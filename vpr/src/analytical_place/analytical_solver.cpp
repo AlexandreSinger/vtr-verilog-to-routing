@@ -21,6 +21,7 @@
 #include "flat_placement_types.h"
 #include "partial_placement.h"
 #include "ap_netlist.h"
+#include "place_delay_model.h"
 #include "timing_info.h"
 #include "vpr_error.h"
 #include "vtr_assert.h"
@@ -50,6 +51,7 @@ std::unique_ptr<AnalyticalSolver> make_analytical_solver(e_ap_analytical_solver 
                                                          const DeviceGrid& device_grid,
                                                          const AtomNetlist& atom_netlist,
                                                          const PreClusterTimingManager& pre_cluster_timing_manager,
+                                                         std::shared_ptr<PlaceDelayModel> place_delay_model,
                                                          float ap_timing_tradeoff,
                                                          unsigned num_threads,
                                                          int log_verbosity) {
@@ -94,6 +96,7 @@ std::unique_ptr<AnalyticalSolver> make_analytical_solver(e_ap_analytical_solver 
                                                device_grid,
                                                atom_netlist,
                                                pre_cluster_timing_manager,
+                                               place_delay_model,
                                                ap_timing_tradeoff,
                                                log_verbosity);
 #else
@@ -596,7 +599,7 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
 
         // Set up the linear system, including anchor points.
         float build_linear_system_start_time = runtime_timer.elapsed_sec();
-        init_linear_system(p_placement);
+        init_linear_system(p_placement, iteration);
         if (iteration != 0)
             update_linear_system_with_anchors(iteration);
         total_time_spent_building_linear_system_ += runtime_timer.elapsed_sec() - build_linear_system_start_time;
@@ -783,7 +786,7 @@ void B2BSolver::add_connection_to_system(APBlockId first_blk_id,
     }
 }
 
-void B2BSolver::init_linear_system(PartialPlacement& p_placement) {
+void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned iteration) {
     // Reset the linear system
     A_sparse_x = Eigen::SparseMatrix<double>(num_moveable_blocks_, num_moveable_blocks_);
     A_sparse_y = Eigen::SparseMatrix<double>(num_moveable_blocks_, num_moveable_blocks_);
@@ -841,14 +844,73 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement) {
                 continue;
             APBlockId sink_blk = netlist_.pin_block(net_pin);
 
+            float dx = p_placement.block_x_locs[sink_blk] - p_placement.block_x_locs[driver_blk];
+            float dy = p_placement.block_y_locs[sink_blk] - p_placement.block_y_locs[driver_blk];
+
+            // Get the derivative of the delay at this point.
+            // FIXME: Improve the derivate calculation. Should be a combination
+            //        of the (current_edge_delay / dx) and sample_x
+            t_physical_tile_loc driver_block_loc(block_x_locs_legalized[driver_blk],
+                                                 block_y_locs_legalized[driver_blk],
+                                                 p_placement.block_layer_nums[driver_blk]);
+            t_physical_tile_loc sink_block_loc(block_x_locs_legalized[driver_blk] + dx,
+                                                 block_y_locs_legalized[driver_blk] + dy,
+                                                 p_placement.block_layer_nums[sink_blk]);
+
+            float current_edge_delay = place_delay_model_->delay(driver_block_loc,
+                                                                 0,
+                                                                 sink_block_loc,
+                                                                 0);
+            VTR_ASSERT(current_edge_delay < 100);
+
+            float d_delay_x = 0.0f;
+            float sample_x = 0.0f;
+            if (sink_block_loc.x < (int)device_grid_width_ - 1) {
+                sample_x = place_delay_model_->delay(driver_block_loc,
+                                                      0,
+                                                      {sink_block_loc.x + 1, sink_block_loc.y, sink_block_loc.layer_num},
+                                                      0);
+            } else {
+                sample_x = place_delay_model_->delay(driver_block_loc,
+                                                      0,
+                                                      {sink_block_loc.x - 1, sink_block_loc.y, sink_block_loc.layer_num},
+                                                      0);
+
+            }
+            d_delay_x = std::abs(sample_x - current_edge_delay);
+
+            float d_delay_y = 0.0f;
+            float sample_y = 0.0f;
+            if (sink_block_loc.y < (int)device_grid_height_ - 1) {
+                sample_y = place_delay_model_->delay(driver_block_loc,
+                                                      0,
+                                                      {sink_block_loc.x, sink_block_loc.y + 1, sink_block_loc.layer_num},
+                                                      0);
+            } else {
+                sample_y = place_delay_model_->delay(driver_block_loc,
+                                                      0,
+                                                      {sink_block_loc.x, sink_block_loc.y - 1, sink_block_loc.layer_num},
+                                                      0);
+
+            }
+            d_delay_y = std::abs(sample_y - current_edge_delay);
+
+            // We want the criticality to get sharper over iterations.
             double crit = pre_cluster_timing_manager_.get_timing_info().setup_pin_criticality(netlist_.pin_atom_pin(net_pin));
+            // double crit_exp = 1.0 + (static_cast<double>(iteration) / 1.0);
+            // crit_exp = 9;
+            // crit = std::pow(crit, crit_exp);
+
+            // FIXME: Investigate the num_pins term. This looks more likea a clique
+            //        formulation.
+            //   I am pretty sure it should be 2 here.
             double weight = ap_timing_tradeoff_ * crit;
             add_connection_to_system(driver_blk, sink_blk,
-                                     num_pins, weight,
+                                     2 /*num_pins*/, weight * d_delay_x,
                                      p_placement.block_x_locs, triplet_list_x, b_x); 
 
             add_connection_to_system(driver_blk, sink_blk,
-                                     num_pins, weight,
+                                     2 /*num_pins*/, weight * d_delay_y,
                                      p_placement.block_y_locs, triplet_list_y, b_y); 
         }
     }

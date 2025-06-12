@@ -11,6 +11,7 @@
 #include "ap_flow_enums.h"
 #include "ap_netlist.h"
 #include "device_grid.h"
+#include "place_delay_model.h"
 #include "vtr_strong_id.h"
 #include "vtr_vector.h"
 
@@ -153,6 +154,7 @@ std::unique_ptr<AnalyticalSolver> make_analytical_solver(e_ap_analytical_solver 
                                                          const DeviceGrid& device_grid,
                                                          const AtomNetlist& atom_netlist,
                                                          const PreClusterTimingManager& pre_cluster_timing_manager,
+                                                         std::shared_ptr<PlaceDelayModel> place_delay_model,
                                                          float ap_timing_tradeoff,
                                                          unsigned num_threads,
                                                          int log_verbosity);
@@ -448,12 +450,14 @@ class B2BSolver : public AnalyticalSolver {
               const DeviceGrid& device_grid,
               const AtomNetlist& atom_netlist,
               const PreClusterTimingManager& pre_cluster_timing_manager,
+              std::shared_ptr<PlaceDelayModel> place_delay_model,
               float ap_timing_tradeoff,
               int log_verbosity)
         : AnalyticalSolver(ap_netlist, atom_netlist, pre_cluster_timing_manager, ap_timing_tradeoff, log_verbosity)
         , device_grid_width_(device_grid.width())
         , device_grid_height_(device_grid.height())
-        , pre_cluster_timing_manager_(pre_cluster_timing_manager) {}
+        , pre_cluster_timing_manager_(pre_cluster_timing_manager)
+        , place_delay_model_(place_delay_model) {}
 
     /**
      * @brief Perform an iteration of the B2B solver, storing the result into
@@ -558,7 +562,7 @@ class B2BSolver : public AnalyticalSolver {
      * This will set the connectivity matrices (A) and constant vectors (b) to
      * be solved by B2B.
      */
-    void init_linear_system(PartialPlacement& p_placement);
+    void init_linear_system(PartialPlacement& p_placement, unsigned iteration);
 
     /**
      * @brief Updates the linear system with anchor-blocks from the legalized
@@ -631,6 +635,8 @@ class B2BSolver : public AnalyticalSolver {
 
     // FIXME: Figure out how to pass this information.
     const PreClusterTimingManager& pre_cluster_timing_manager_;
+
+    std::shared_ptr<PlaceDelayModel> place_delay_model_;
 };
 
 #endif // EIGEN_INSTALLED
