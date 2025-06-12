@@ -802,31 +802,49 @@ std::pair<float, float> B2BSolver::get_delay_derivative(APBlockId driver_blk,
                                          block_y_locs_legalized[driver_blk] + flat_dy,
                                          p_placement.block_layer_nums[sink_blk]);
 
+    // FIXME: To make this more clear, we should be able to directly access the
+    //        data structure in place delay model.
     float current_edge_delay = place_delay_model_->delay(driver_block_loc,
                                                          0,
                                                          sink_block_loc,
                                                          0);
     VTR_ASSERT(current_edge_delay < 100);
 
-    // FIXME: Investigate the case when we are within a tile!
+    // If the driver and sink are within the same tile, return the current edge
+    // delay (the minimum delay within the tile).
+    // TODO: Investigate interpolating this with the cost of leaving the tile.
+    // FIXME: Investigate directly turning this off now. The following code
+    //        should handle this better.
+    int tile_dx = sink_block_loc.x - driver_block_loc.x;
+    int tile_dy = sink_block_loc.y - driver_block_loc.y;
+    if (tile_dx == 0 && tile_dy == 0) {
+        return std::make_pair(current_edge_delay, current_edge_delay);
+    }
 
     float left_edge_delay = -1.0f;
     float right_edge_delay = -1.0f;
-    if (sink_block_loc.x < (int)device_grid_width_ - 1) {
+    VTR_ASSERT_SAFE(tile_dx < (int)device_grid_width_);
+    // FIXME: These gaurds are not necessary! And actually they are wrong, we just need dx
+    //        to be within bounds (which it always must be!
+    // if (sink_block_loc.x < (int)device_grid_width_ - 1) {
         right_edge_delay = place_delay_model_->delay(driver_block_loc,
                                               0,
                                               {sink_block_loc.x + 1, sink_block_loc.y, sink_block_loc.layer_num},
                                               0);
-    }
-    if (sink_block_loc.x > 0) {
+    // }
+    // if (sink_block_loc.x > 0) {
         left_edge_delay = place_delay_model_->delay(driver_block_loc,
                                               0,
                                               {sink_block_loc.x - 1, sink_block_loc.y, sink_block_loc.layer_num},
                                               0);
-    }
+    // }
     float forward_difference_x = right_edge_delay - current_edge_delay;
     float backward_difference_x = current_edge_delay - left_edge_delay;
     float central_difference_x = (forward_difference_x + backward_difference_x) / 2.0f;
+    // The delay model is symmetric, therefore the central difference will always be zero.
+    // Use the forward difference arbitrarily.
+    if (tile_dx == 0)
+        central_difference_x = std::max(forward_difference_x, backward_difference_x);
 
     float d_delay_x = 0.0f;
     if (left_edge_delay > 0.0f && right_edge_delay > 0.0f) {
@@ -838,23 +856,27 @@ std::pair<float, float> B2BSolver::get_delay_derivative(APBlockId driver_blk,
         d_delay_x = forward_difference_x;
     }
 
+
     float upper_edge_delay = -1.0f;
     float lower_edge_delay = -1.0f;
-    if (sink_block_loc.y < (int)device_grid_height_ - 1) {
+    VTR_ASSERT_SAFE(tile_dy < (int)device_grid_height_);
+    // if (sink_block_loc.y < (int)device_grid_height_ - 1) {
         upper_edge_delay = place_delay_model_->delay(driver_block_loc,
                                               0,
                                               {sink_block_loc.x, sink_block_loc.y + 1, sink_block_loc.layer_num},
                                               0);
-    }
-    if (sink_block_loc.x > 0) {
+    // }
+    // if (sink_block_loc.x > 0) {
         lower_edge_delay = place_delay_model_->delay(driver_block_loc,
                                               0,
                                               {sink_block_loc.x, sink_block_loc.y - 1, sink_block_loc.layer_num},
                                               0);
-    }
+    // }
     float forward_difference_y = upper_edge_delay - current_edge_delay;
     float backward_difference_y = current_edge_delay - lower_edge_delay;
     float central_difference_y = (forward_difference_y + backward_difference_y) / 2.0f;
+    if (tile_dy == 0)
+        central_difference_y = std::max(forward_difference_y, backward_difference_y);
 
     float d_delay_y = 0.0f;
     if (lower_edge_delay > 0.0f && upper_edge_delay > 0.0f) {
@@ -864,6 +886,8 @@ std::pair<float, float> B2BSolver::get_delay_derivative(APBlockId driver_blk,
     } else if (upper_edge_delay > 0.0f) {
         // FIXME: The map router lookahead definately has a bug. Found that the
         //        upper edge delay is sometimes negative when it shouldn't be.
+        // NOTE: This was likely fixed. Now I think its impossible for any of
+        //       these values to be negative.
         VTR_ASSERT_SAFE(upper_edge_delay > 0.0f);
         d_delay_y = forward_difference_y;
     }
