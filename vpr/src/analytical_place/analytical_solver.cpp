@@ -927,6 +927,19 @@ std::pair<float, float> B2BSolver::get_delay_derivative(APBlockId driver_blk,
         d_delay_y = forward_difference_y;
     }
 
+
+    float a_edge_delay = place_delay_model_->delay(driver_block_loc,
+                                                       0 /*from_pin*/,
+                                                       {driver_block_loc.x + 1, driver_block_loc.y, driver_block_loc.layer_num},
+                                                       0 /*to_pin*/);
+    float b_edge_delay = place_delay_model_->delay(driver_block_loc,
+                                                      0 /*from_pin*/,
+                                                      {driver_block_loc.x, driver_block_loc.y + 1, layer_num},
+                                                      0 /*to_pin*/);
+
+    d_delay_x /= a_edge_delay;
+    d_delay_y /= b_edge_delay;
+
     return std::make_pair(d_delay_x, d_delay_y);
 }
 
@@ -997,20 +1010,21 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
             double crit_exp = 9.0;
             double exponentiated_crit = std::pow(crit, crit_exp);
 
-            float timing_slope_fac = 0.01f;
-            d_delay_x *= 1e9;
-            d_delay_y *= 1e9;
+            double driver_to_sink_dist_fac = 0.75f;
+            double timing_slope_fac = 0.1f;
+            //d_delay_x *= 1e9;
+            //d_delay_y *= 1e9;
 
             // FIXME: Investigate the num_pins term. This looks more likea a clique
             //        formulation.
             //   I am pretty sure it should be 2 here.
             double weight = ap_timing_tradeoff_;
             add_connection_to_system(driver_blk, sink_blk,
-                                     2 /*num_pins*/, weight * ((exponentiated_crit * 1.0f) + ((1.0f + crit) * timing_slope_fac * d_delay_x)),
+                                     2 /*num_pins*/, weight * ((exponentiated_crit * driver_to_sink_dist_fac) + ((1.0 + crit) * timing_slope_fac * d_delay_x)),
                                      p_placement.block_x_locs, triplet_list_x, b_x); 
 
             add_connection_to_system(driver_blk, sink_blk,
-                                     2 /*num_pins*/, weight * ((exponentiated_crit * 1.0f) + ((1.0f + crit) * timing_slope_fac * d_delay_y)),
+                                     2 /*num_pins*/, weight * ((exponentiated_crit * driver_to_sink_dist_fac) + ((1.0 + crit) * timing_slope_fac * d_delay_y)),
                                      p_placement.block_y_locs, triplet_list_y, b_y); 
         }
     }
