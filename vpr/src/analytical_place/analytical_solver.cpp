@@ -859,6 +859,8 @@ void B2BSolver::add_connection_to_system(APBlockId first_blk_id,
 // Use Finite Differences to compute derivative.
 std::pair<double, double> B2BSolver::get_delay_derivative(APBlockId driver_blk,
                                                           APBlockId sink_blk,
+                                                          const vtr::vector<APBlockId, double>& block_x_locs,
+                                                          const vtr::vector<APBlockId, double>& block_y_locs,
                                                           const PartialPlacement& p_placement) {
 
     // Get the flat distance from the driver block to the sink block.
@@ -866,8 +868,8 @@ std::pair<double, double> B2BSolver::get_delay_derivative(APBlockId driver_blk,
     //       the delay is symmetric (same delay regardless if you are going left
     //       or right for example). This simplifies the code below some by having
     //       us only focus on the positive axis.
-    float flat_dx = std::abs(p_placement.block_x_locs[sink_blk] - p_placement.block_x_locs[driver_blk]);
-    float flat_dy = std::abs(p_placement.block_y_locs[sink_blk] - p_placement.block_y_locs[driver_blk]);
+    float flat_dx = std::abs(block_x_locs[sink_blk] - block_x_locs[driver_blk]);
+    float flat_dy = std::abs(block_y_locs[sink_blk] - block_y_locs[driver_blk]);
 
     // TODO: Handle 3D FPGAs for this method.
     int layer_num = 0;
@@ -1101,9 +1103,21 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
                 // from driver to sink. This will provide a value which is higher
                 // if the tradeoff between delay and wirelength is better, and
                 // lower when the tradeoff between delay and wirelength is worse.
-                auto [d_delay_x, d_delay_y] = get_delay_derivative(driver_blk,
+                // auto [d_delay_x, d_delay_y] = get_delay_derivative(driver_blk,
+                //                                                    sink_blk,
+                //                                                    p_placement);
+                auto [d_delay_x_solved, d_delay_y_solved] = get_delay_derivative(driver_blk,
                                                                    sink_blk,
+                                                                   block_x_locs_solved,
+                                                                   block_y_locs_solved,
                                                                    p_placement);
+                auto [d_delay_x_current, d_delay_y_current] = get_delay_derivative(driver_blk,
+                                                                   sink_blk,
+                                                                   p_placement.block_x_locs,
+                                                                   p_placement.block_y_locs,
+                                                                   p_placement);
+                double d_delay_x = (0.8 * d_delay_x_solved) + (0.2 * d_delay_x_current);
+                double d_delay_y = (0.8 * d_delay_y_solved) + (0.2 * d_delay_y_current);
 
                 // Since the delay between two blocks may not monotonically increase
                 // (it may go down with distance due to different length wires), it

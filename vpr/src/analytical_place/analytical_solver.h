@@ -618,6 +618,8 @@ class B2BSolver : public AnalyticalSolver {
      */
     std::pair<double, double> get_delay_derivative(APBlockId driver_blk,
                                                    APBlockId sink_blk,
+                                                   const vtr::vector<APBlockId, double>& block_x_locs,
+                                                   const vtr::vector<APBlockId, double>& block_y_locs,
                                                    const PartialPlacement& p_placement);
 
     /**
