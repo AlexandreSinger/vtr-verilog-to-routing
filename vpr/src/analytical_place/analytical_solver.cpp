@@ -7,6 +7,7 @@
  */
 
 #include "analytical_solver.h"
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <limits>
@@ -820,6 +821,10 @@ void B2BSolver::add_connection_to_system(APBlockId first_blk_id,
                                          const vtr::vector<APBlockId, double>& blk_locs,
                                          std::vector<Eigen::Triplet<double>>& triplet_list,
                                          Eigen::VectorXd& b) {
+    // If the weight of the net is 0, there is no reason to add its connection.
+    if (net_w == 0)
+        return;
+
     // To make the code below simpler, we assume that the first block is always
     // moveable.
     if (netlist_.block_mobility(first_blk_id) != APBlockMobility::MOVEABLE) {
@@ -840,6 +845,42 @@ void B2BSolver::add_connection_to_system(APBlockId first_blk_id,
     // interpreting epsilon is the minimum distance two nodes are considered to be in placement.
     double dist = std::max(std::abs(blk_locs[first_blk_id] - blk_locs[second_blk_id]), distance_epsilon_);
     double w = net_w * (2.0 / static_cast<double>(num_pins - 1)) * (1.0 / dist);
+
+    if (w < 0) {
+        // You should not add a negatively weighted connection between two blocks.
+        // Sometimes it can work (if there are other weights in the matrix);
+        // however, you can get crazy results if you allow negative weights.
+        // To get around this, instead of adding a weighted connection between the
+        // two blocks, we will connect the blocks to two different fixed points
+        // at an equal and opposite distance. This will serve to pull apart the two
+        // blocks.
+        double first_anchor_pos = (2.0 * blk_locs[first_blk_id]) - blk_locs[second_blk_id];
+        double second_anchor_pos = (2.0 * blk_locs[second_blk_id]) - blk_locs[first_blk_id];
+        // NOTE: These positions may be off the device; however, we allow the solved
+        //       positions to go off the device, we just clamp them to the device
+        //       grid at the end of the solver. It is just important that these
+        //       positions do not tend toward infintiy.
+        // TODO: This is not ideal since we want the solver to be aware of the
+        //       device grid constraint. Should investigate handling this
+        //       properly.
+
+        // The first block is always moveable. Add a connection from the first
+        // block to its anchor point.
+        size_t first_row_id = (size_t)blk_id_to_row_id_[first_blk_id];
+        triplet_list.emplace_back(first_row_id, first_row_id, std::abs(w));
+        b(first_row_id) += std::abs(w) * first_anchor_pos;
+
+        // Add a connection from the second block to its anchor if it is moveable.
+        // If it is a fixed block, there is no need to add a connection.
+        if (netlist_.block_mobility(second_blk_id) == APBlockMobility::MOVEABLE) {
+            size_t second_row_id = (size_t)blk_id_to_row_id_[second_blk_id];
+            triplet_list.emplace_back(second_row_id, second_row_id, std::abs(w));
+            b(second_row_id) += std::abs(w) * second_anchor_pos;
+        }
+
+        // Do not add the regular connection to the matrix.
+        return;
+    }
 
     // Update the connectivity matrix and the constant vector.
     // This is similar to how connections are added for the quadratic formulation.
@@ -1103,34 +1144,11 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
                 // from driver to sink. This will provide a value which is higher
                 // if the tradeoff between delay and wirelength is better, and
                 // lower when the tradeoff between delay and wirelength is worse.
-                // auto [d_delay_x, d_delay_y] = get_delay_derivative(driver_blk,
-                //                                                    sink_blk,
-                //                                                    p_placement);
-                auto [d_delay_x_solved, d_delay_y_solved] = get_delay_derivative(driver_blk,
-                                                                   sink_blk,
-                                                                   block_x_locs_solved,
-                                                                   block_y_locs_solved,
-                                                                   p_placement);
-                auto [d_delay_x_current, d_delay_y_current] = get_delay_derivative(driver_blk,
+                auto [d_delay_x, d_delay_y] = get_delay_derivative(driver_blk,
                                                                    sink_blk,
                                                                    p_placement.block_x_locs,
                                                                    p_placement.block_y_locs,
                                                                    p_placement);
-                double d_delay_x = (0.8 * d_delay_x_solved) + (0.2 * d_delay_x_current);
-                double d_delay_y = (0.8 * d_delay_y_solved) + (0.2 * d_delay_y_current);
-
-                // Since the delay between two blocks may not monotonically increase
-                // (it may go down with distance due to different length wires), it
-                // is possible for the derivative of delay to be negative. The weight
-                // terms in this formulation should not be negative to prevent infinite
-                // answers. To prevent this, clamp the derivative to 0.
-                // TODO: If this is negative, it means that the sink should try to move
-                //       away from the driver. Perhaps add an anchor point to pull the
-                //       sink away.
-                if (d_delay_x < 0)
-                    d_delay_x = 0;
-                if (d_delay_y < 0)
-                    d_delay_y = 0;
 
                 // The units for delay is in seconds; however the units for
                 // the wirelength term is in tile. To ensure the units match,
@@ -1141,6 +1159,15 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
                 // Get the criticality of this timing edge from driver to sink.
                 double crit = pre_cluster_timing_manager_.get_timing_info().setup_pin_criticality(netlist_.pin_atom_pin(net_pin));
 
+                // The instantaneous delay only tells us the current tradeoff
+                // between delay and distance at the current placement; however,
+                // we know that decreasing the distance from driver to sink should
+                // always improve timing. Therefore, we want to bias the timing
+                // tradeoff to reduce the distance to improve timing; however,
+                // we only want to do this for the more critical connections since
+                // for the least critical connections the tradeoff is 0.
+                double timing_bias = crit;
+
                 // Set the weight of the connection from driver to sink equal to:
                 //      weight_tradeoff_terms * (1 + crit) * d_delay * delay_norm
                 // The intuition is that we want the solver to shrink the distance
@@ -1150,11 +1177,11 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
                 double timing_net_w = ap_timing_tradeoff_ * net_weights_[net_id] * timing_slope_fac_ * (1.0 + crit);
 
                 add_connection_to_system(driver_blk, sink_blk,
-                                         2 /*num_pins*/, timing_net_w * d_delay_x * delay_x_norm,
+                                         2 /*num_pins*/, timing_net_w * (timing_bias + d_delay_x * delay_x_norm),
                                          p_placement.block_x_locs, triplet_list_x, b_x);
 
                 add_connection_to_system(driver_blk, sink_blk,
-                                         2 /*num_pins*/, timing_net_w * d_delay_y * delay_y_norm,
+                                         2 /*num_pins*/, timing_net_w * (timing_bias + d_delay_y * delay_y_norm),
                                          p_placement.block_y_locs, triplet_list_y, b_y);
             }
         }

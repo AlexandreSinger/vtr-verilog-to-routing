@@ -609,6 +609,10 @@ class B2BSolver : public AnalyticalSolver {
      *      The driver block for the edge to get the derivative of.
      *  @param sink_blk
      *      The sink block for the edge to get the derivative of.
+     *  @param block_x_locs
+     *      The x locations of the blocks to use when computing the derivative.
+     *  @param block_y_locs
+     *      The y locations of the blocks to use when computing the derivative.
      *  @param p_placement
      *      The current placement of the AP blocks. Used to get the current
      *      distance from the driver to the sink.
