@@ -37,11 +37,15 @@
  */
 
 #include "greedy_clusterer.h"
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include "appack_context.h"
+#include "flat_placement_types.h"
+#include "globals.h"
 #include "setup_grid.h"
 #include "atom_netlist.h"
 #include "attraction_groups.h"
@@ -391,6 +395,39 @@ LegalizationClusterId GreedyClusterer::start_new_cluster(
                              //Lower util first
                              return lhs_util < rhs_util;
                          });
+    } else {
+
+    // APPack: sort it such that logical block types that are compatible with
+    //         the current tile the block is over come first.
+    if (appack_ctx_.appack_options.use_appack) {
+        const t_flat_pl_loc mol_loc = appack_ctx_.flat_placement_info.get_pos(root_atom);
+        const DeviceGrid& device_grid = g_vpr_ctx.device().grid;
+        t_physical_tile_loc mol_tile_loc(mol_loc.x, mol_loc.y, mol_loc.layer);
+        const t_physical_tile_type_ptr mol_tile_ty = device_grid.get_physical_type(mol_tile_loc);
+        std::unordered_set<t_logical_block_type_ptr> compatible_candidates;
+        for (const t_sub_tile& sub_tile : mol_tile_ty->sub_tiles) {
+            for (t_logical_block_type_ptr block_ty : sub_tile.equivalent_sites) {
+                compatible_candidates.insert(block_ty);
+            }
+        }
+
+        std::stable_sort(candidate_types.begin(), candidate_types.end(),
+                         [&](t_logical_block_type_ptr lhs, t_logical_block_type_ptr rhs) {
+                            int lhs_cost = 0;
+                            int rhs_cost = 0;
+
+                            if (compatible_candidates.count(lhs) == 0) {
+                                lhs_cost++;
+                            }
+                            if (compatible_candidates.count(rhs) == 0) {
+                                rhs_cost++;
+                            }
+
+                            return lhs_cost < rhs_cost;
+
+                         });
+    }
+
     }
 
     if (log_verbosity_ > 2) {
