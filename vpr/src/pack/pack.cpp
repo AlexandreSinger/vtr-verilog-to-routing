@@ -290,6 +290,13 @@ bool try_pack(const t_packer_opts& packer_opts,
                              device_ctx.logical_block_types,
                              device_ctx.grid);
 
+    // FIXME: Combine this with the prior statements that do something similar
+    if (appack_ctx.appack_options.use_appack) {
+        if (packer_opts.allow_unrelated_clustering == e_unrelated_clustering::AUTO) {
+            allow_unrelated_clustering = true;
+        }
+    }
+
     // Initialize the greedy clusterer.
     GreedyClusterer clusterer(packer_opts,
                               analysis_opts,
@@ -366,6 +373,8 @@ bool try_pack(const t_packer_opts& packer_opts,
                 }
                 if (appack_ctx.appack_options.use_appack) {
                     // Only do unrelated clustering on the overused type instances.
+                    // FIXME: This needs to be reworked. This assumes that unrelated
+                    //        clustering is not on already.
                     for (const auto& p : block_type_utils) {
                         // Any overutilized block types will use the default options.
                         if (p.second > 1.0f)
