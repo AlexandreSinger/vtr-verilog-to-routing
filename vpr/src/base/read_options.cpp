@@ -2010,6 +2010,13 @@ argparse::ArgumentParser create_arg_parser(const std::string& prog_name, t_optio
         .default_value({"auto"})
         .show_in(argparse::ShowIn::HELP_ONLY);
 
+    ap_grp.add_argument(args.appack_unrelated_clustering_args, "--appack_unrelated_clustering_args")
+        .help(
+            "TODO.")
+        .nargs('+')
+        .default_value({"auto"})
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
     ap_grp.add_argument<int>(args.ap_verbosity, "--ap_verbosity")
         .help(
             "Controls how verbose the AP flow's log messages will be. Higher "

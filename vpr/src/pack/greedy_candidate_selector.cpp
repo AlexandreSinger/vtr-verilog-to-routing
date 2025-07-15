@@ -1276,7 +1276,15 @@ PackMoleculeId GreedyCandidateSelector::get_unrelated_candidate_for_cluster_appa
 
     // Get the max unrelated tile distance for the block type of this cluster.
     t_logical_block_type_ptr cluster_type = cluster_legalizer.get_cluster_type(cluster_id);
+    // FIXME: The max distance should also be limited by the max candidate distance.
+    //       No reason to check further than we need.
+    //          Actually these are proposed... We may want to keep the control here.
     float max_dist = appack_ctx_.appack_options.max_unrelated_tile_distance[cluster_type->index];
+
+    // Do not let the max unrelated distance exceed the max distance threshold.
+    // TODO: Investigate relaxing this.
+    max_dist = std::min(max_dist,
+                        appack_ctx_.max_distance_threshold_manager.get_max_dist_threshold(*cluster_type));
 
     // Keep track of the closest compatible molecule and its distance.
     float best_distance = std::numeric_limits<float>::max();

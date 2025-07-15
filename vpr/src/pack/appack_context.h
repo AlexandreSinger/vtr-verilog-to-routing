@@ -7,13 +7,17 @@
  *          information used to configure APPack in the packer.
  */
 
+#include <string>
+#include "ap_argparse_utils.h"
 #include "appack_max_dist_th_manager.h"
 #include "device_grid.h"
 #include "flat_placement_types.h"
 #include "physical_types.h"
 #include "vpr_context.h"
+#include "vpr_error.h"
 #include "vpr_types.h"
 #include "vpr_utils.h"
+#include "vtr_assert.h"
 
 /**
  * @brief Configuration options for APPack.
@@ -133,6 +137,8 @@ struct APPackContext : public Context {
                                                 device_grid);
         }
 
+        // FIXME: Move all of this to a method. This is too muchf for a header
+        //        file.
         // Set the max unrelated tile distances for all logical block types.
         // By default, we set this to a low value to only allow unrelated molecules
         // that are very close to the cluster being created.
@@ -141,7 +147,44 @@ struct APPackContext : public Context {
         //       tile containing the centroid.
         appack_options.max_unrelated_tile_distance.resize(logical_block_types.size(), 1.0);
         appack_options.max_unrelated_clustering_attempts.resize(logical_block_types.size(),
-                                                                appack_options.default_max_unrelated_clustering_attempts);
+                                                                0);
+
+        if (ap_opts.appack_unrelated_clustering_args[0] != "auto") {
+            VTR_LOG("I GOT HERE!\n");
+        std::vector<std::string> lb_type_names;
+        std::unordered_map<std::string, int> lb_type_name_to_index;
+        for (const t_logical_block_type& lb_ty : logical_block_types) {
+            lb_type_names.push_back(lb_ty.name);
+            lb_type_name_to_index[lb_ty.name] = lb_ty.index;
+        }
+
+        auto lb_to_floats_map = key_to_float_argument_parser(ap_opts.appack_unrelated_clustering_args,
+                                                             lb_type_names,
+                                                             2);
+
+        for (const auto& lb_name_to_floats_pair : lb_to_floats_map) {
+            const std::string& lb_name = lb_name_to_floats_pair.first;
+            const std::vector<float>& lb_floats = lb_name_to_floats_pair.second;
+            VTR_ASSERT(lb_floats.size() == 2);
+
+            float logical_block_max_unrel_dist = lb_floats[0];
+            float logical_block_max_unrel_attempts = lb_floats[1];
+
+            if (logical_block_max_unrel_dist < 0.0) {
+                VPR_FATAL_ERROR(VPR_ERROR_PACK,
+                                "APPack: Cannot have negative max unrelated distance");
+            }
+            if (logical_block_max_unrel_attempts < 0.0) {
+                VPR_FATAL_ERROR(VPR_ERROR_PACK,
+                                "APPack: Cannot have negative max unrelated attempts");
+            }
+            int lb_ty_index = lb_type_name_to_index[lb_name];
+            appack_options.max_unrelated_tile_distance[lb_ty_index] = logical_block_max_unrel_dist;
+            appack_options.max_unrelated_clustering_attempts[lb_ty_index] = logical_block_max_unrel_attempts;
+            VTR_LOG("I GOT HERE TOO %f, %f!\n", logical_block_max_unrel_dist, logical_block_max_unrel_attempts);
+        }
+        }
+
     }
 
     /**
