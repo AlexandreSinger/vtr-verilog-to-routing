@@ -145,12 +145,12 @@ struct APPackContext : public Context {
         // NOTE: Molecules within the same tile as the centroid are considered to have
         //       0 distance. The distance is computed relative to the bounds of the
         //       tile containing the centroid.
-        appack_options.max_unrelated_tile_distance.resize(logical_block_types.size(), 1.0);
+        float max_distance_on_device = device_grid.width() + device_grid.height();
+        appack_options.max_unrelated_tile_distance.resize(logical_block_types.size(), max_distance_on_device);
         appack_options.max_unrelated_clustering_attempts.resize(logical_block_types.size(),
-                                                                0);
+                                                                1);
 
         if (ap_opts.appack_unrelated_clustering_args[0] != "auto") {
-            VTR_LOG("I GOT HERE!\n");
         std::vector<std::string> lb_type_names;
         std::unordered_map<std::string, int> lb_type_name_to_index;
         for (const t_logical_block_type& lb_ty : logical_block_types) {
@@ -181,7 +181,6 @@ struct APPackContext : public Context {
             int lb_ty_index = lb_type_name_to_index[lb_name];
             appack_options.max_unrelated_tile_distance[lb_ty_index] = logical_block_max_unrel_dist;
             appack_options.max_unrelated_clustering_attempts[lb_ty_index] = logical_block_max_unrel_attempts;
-            VTR_LOG("I GOT HERE TOO %f, %f!\n", logical_block_max_unrel_dist, logical_block_max_unrel_attempts);
         }
         }
 

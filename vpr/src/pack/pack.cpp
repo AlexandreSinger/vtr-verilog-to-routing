@@ -295,6 +295,15 @@ bool try_pack(const t_packer_opts& packer_opts,
         if (packer_opts.allow_unrelated_clustering == e_unrelated_clustering::AUTO) {
             allow_unrelated_clustering = true;
         }
+
+        // HACK! Override the target external pin utilization automatically set
+        // if AP is enabled.
+        if (packer_opts.target_external_pin_util[0] == "auto") {
+            t_ext_pin_util pin_util(1.0, 1.0);
+            for (const t_logical_block_type& logical_block_type : device_ctx.logical_block_types) {
+                cluster_legalizer.get_target_external_pin_util().set_block_pin_util(logical_block_type.name, pin_util);
+            }
+        }
     }
 
     // Initialize the greedy clusterer.
