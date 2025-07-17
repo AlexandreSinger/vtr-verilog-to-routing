@@ -54,6 +54,8 @@ enum class e_packer_state {
     /// @brief Region constraints: Turns on more attraction groups for all regions
     ///        and increases the pull on these groups.
     CREATE_ATTRACTION_GROUPS_FOR_ALL_REGIONS_AND_INCREASE_PULL,
+
+    AP_USE_HIGH_EFFORT_UC,
     /// @brief APPack: Increase the max displacement threshold for overused block types.
     AP_INCREASE_MAX_DISPLACEMENT,
     /// @brief The failure state.
@@ -295,15 +297,6 @@ bool try_pack(const t_packer_opts& packer_opts,
         if (packer_opts.allow_unrelated_clustering == e_unrelated_clustering::AUTO) {
             allow_unrelated_clustering = true;
         }
-
-        // HACK! Override the target external pin utilization automatically set
-        // if AP is enabled.
-        if (packer_opts.target_external_pin_util[0] == "auto") {
-            t_ext_pin_util pin_util(1.0, 1.0);
-            for (const t_logical_block_type& logical_block_type : device_ctx.logical_block_types) {
-                cluster_legalizer.get_target_external_pin_util().set_block_pin_util(logical_block_type.name, pin_util);
-            }
-        }
     }
 
     // Initialize the greedy clusterer.
@@ -379,22 +372,6 @@ bool try_pack(const t_packer_opts& packer_opts,
                 if (packer_opts.balance_block_type_utilization == e_balance_block_type_util::AUTO) {
                     VTR_ASSERT(balance_block_type_util == false);
                     balance_block_type_util = true;
-                }
-                if (appack_ctx.appack_options.use_appack) {
-                    // Only do unrelated clustering on the overused type instances.
-                    // FIXME: This needs to be reworked. This assumes that unrelated
-                    //        clustering is not on already.
-                    for (const auto& p : block_type_utils) {
-                        // Any overutilized block types will use the default options.
-                        if (p.second > 1.0f)
-                            continue;
-
-                        // Any underutilized block types should not do unrelated clustering.
-                        // We can turn this off by just setting the max attempts to 0.
-                        // TODO: These may become over-utilized in the future. Should
-                        //       investigate turning these on if needed.
-                        appack_ctx.appack_options.max_unrelated_clustering_attempts[p.first->index] = 0;
-                    }
                 }
                 VTR_LOG("Packing failed to fit on device. Re-packing with: unrelated_logic_clustering=%s balance_block_type_util=%s\n",
                         (allow_unrelated_clustering ? "true" : "false"),
