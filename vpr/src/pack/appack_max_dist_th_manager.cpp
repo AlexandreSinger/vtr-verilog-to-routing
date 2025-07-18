@@ -24,7 +24,8 @@
  *
  * TODO: This should be a graph traversal instead of a recursive function.
  */
-static bool has_memory_pbs(const t_pb_type* pb_type);
+// FIXME: Move this comment.
+// static bool has_memory_pbs(const t_pb_type* pb_type);
 
 void APPackMaxDistThManager::init(const std::vector<std::string>& max_dist_ths,
                                   const std::vector<t_logical_block_type>& logical_block_types,
@@ -113,7 +114,7 @@ void APPackMaxDistThManager::auto_set_max_distance_thresholds(const std::vector<
     }
 }
 
-static bool has_memory_pbs(const t_pb_type* pb_type) {
+bool has_memory_pbs(const t_pb_type* pb_type) {
     if (pb_type == nullptr)
         return false;
 

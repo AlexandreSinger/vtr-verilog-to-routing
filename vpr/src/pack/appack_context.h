@@ -107,7 +107,9 @@ struct t_appack_options {
     // By default, we perform 10 unrelated clustering attempts. This is used
     // to aggresivly resolve density while adhering to the GP solution as much
     // as possible.
-    static constexpr int default_max_unrelated_clustering_attempts = 10;
+    // static constexpr int default_max_unrelated_clustering_attempts = 10;
+
+    static constexpr int high_effort_max_unrelated_clustering_attempts = 12;
 
     // TODO: Investigate adding flat placement info to seed selection.
 };
@@ -149,6 +151,18 @@ struct APPackContext : public Context {
         appack_options.max_unrelated_tile_distance.resize(logical_block_types.size(), max_distance_on_device);
         appack_options.max_unrelated_clustering_attempts.resize(logical_block_types.size(),
                                                                 1);
+        for (const t_logical_block_type& lb_ty : logical_block_types) {
+            // Skip the empty logical block type. This should not have any blocks.
+            if (lb_ty.is_empty())
+                continue;
+
+            bool has_memory = has_memory_pbs(lb_ty.pb_type);
+            if (!has_memory)
+                continue;
+
+            // Do not do unrelated clustering on memories. It is not worth it.
+            appack_options.max_unrelated_clustering_attempts[lb_ty.index] = 0;
+        }
 
         if (ap_opts.appack_unrelated_clustering_args[0] != "auto") {
         std::vector<std::string> lb_type_names;

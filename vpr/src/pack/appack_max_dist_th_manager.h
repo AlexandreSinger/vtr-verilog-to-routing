@@ -146,3 +146,6 @@ class APPackMaxDistThManager {
     ///        to the top right.
     float max_distance_on_device_;
 };
+
+// FIXME: Find a better place to put this!
+bool has_memory_pbs(const t_pb_type* pb_type);

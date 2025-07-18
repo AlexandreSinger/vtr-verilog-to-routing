@@ -1283,11 +1283,12 @@ PackMoleculeId GreedyCandidateSelector::get_unrelated_candidate_for_cluster_appa
 
     // Do not let the max unrelated distance exceed the max distance threshold.
     // TODO: Investigate relaxing this.
-    max_dist = std::min(max_dist,
-                        appack_ctx_.max_distance_threshold_manager.get_max_dist_threshold(*cluster_type));
+    float max_candidate_dist = appack_ctx_.max_distance_threshold_manager.get_max_dist_threshold(*cluster_type);
+    // max_dist = std::min(max_dist,
+    //                     max_candidate_dist);
 
     // Keep track of the closest compatible molecule and its distance.
-    float best_distance = std::numeric_limits<float>::max();
+    float best_distance = max_candidate_dist + 0.0001;
     PackMoleculeId closest_compatible_molecule = PackMoleculeId::INVALID();
 
     while (!search_queue.empty()) {
