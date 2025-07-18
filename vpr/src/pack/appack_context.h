@@ -147,8 +147,9 @@ struct APPackContext : public Context {
         // NOTE: Molecules within the same tile as the centroid are considered to have
         //       0 distance. The distance is computed relative to the bounds of the
         //       tile containing the centroid.
-        float max_distance_on_device = device_grid.width() + device_grid.height();
-        appack_options.max_unrelated_tile_distance.resize(logical_block_types.size(), max_distance_on_device);
+        // FIXME: Investigate making this much lower!
+        // float max_distance_on_device = device_grid.width() + device_grid.height();
+        appack_options.max_unrelated_tile_distance.resize(logical_block_types.size(), 0.0);
         appack_options.max_unrelated_clustering_attempts.resize(logical_block_types.size(),
                                                                 1);
         for (const t_logical_block_type& lb_ty : logical_block_types) {

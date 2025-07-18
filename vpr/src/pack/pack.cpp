@@ -158,6 +158,23 @@ static e_packer_state get_next_packer_state(e_packer_state current_packer_state,
         }
     }
 
+    // First thing to try for APPack (after unrelated and balanced) is to increase the max distance threshold of overused blocks.
+    if (appack_ctx.appack_options.use_appack) {
+        for (const auto& p : block_type_utils) {
+            if (p.second <= 1.0f)
+                continue;
+
+            // Check if we can increased the effort of the unrelated clustering.
+            float max_device_distance = appack_ctx.max_distance_threshold_manager.get_max_device_distance();
+
+            // Check if we can increase the max distance threshold for any of the
+            // overused block types.
+            float max_distance_th = appack_ctx.max_distance_threshold_manager.get_max_dist_threshold(*p.first);
+            if (max_distance_th < max_device_distance)
+                return e_packer_state::AP_INCREASE_MAX_DISPLACEMENT;
+        }
+    }
+
     // If APPack is used, we can increase the max distance threshold to create
     // a denser clustering. This will cause the packer to not adhere as well to
     // the global placement.
@@ -177,9 +194,11 @@ static e_packer_state get_next_packer_state(e_packer_state current_packer_state,
 
             // Check if we can increase the max distance threshold for any of the
             // overused block types.
+            /*
             float max_distance_th = appack_ctx.max_distance_threshold_manager.get_max_dist_threshold(*p.first);
             if (max_distance_th < max_device_distance)
                 return e_packer_state::AP_INCREASE_MAX_DISPLACEMENT;
+            */
         }
     }
 
@@ -383,6 +402,18 @@ bool try_pack(const t_packer_opts& packer_opts,
                 if (packer_opts.balance_block_type_utilization == e_balance_block_type_util::AUTO) {
                     VTR_ASSERT(balance_block_type_util == false);
                     balance_block_type_util = true;
+                }
+                if (appack_ctx.appack_options.use_appack) {
+                    // Only do unrelated clustering on the overused type instances.
+                    for (const auto& p : block_type_utils) {
+                        // Any overutilized block types will use the default options.
+                        if (p.second > 1.0f)
+                            continue;
+
+                        // Any underutilized block types should not do unrelated clustering.
+                        // We can turn this off by just setting the max attempts to 0.
+                        appack_ctx.appack_options.max_unrelated_clustering_attempts[p.first->index] = 0;
+                    }
                 }
                 VTR_LOG("Packing failed to fit on device. Re-packing with: unrelated_logic_clustering=%s balance_block_type_util=%s\n",
                         (allow_unrelated_clustering ? "true" : "false"),
