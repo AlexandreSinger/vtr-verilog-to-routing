@@ -302,9 +302,11 @@ bool try_pack(const t_packer_opts& packer_opts,
 
     // FIXME: Combine this with the prior statements that do something similar
     if (appack_ctx.appack_options.use_appack) {
+        /*
         if (packer_opts.allow_unrelated_clustering == e_unrelated_clustering::AUTO) {
             allow_unrelated_clustering = true;
         }
+        */
     }
 
     // Initialize the greedy clusterer.
