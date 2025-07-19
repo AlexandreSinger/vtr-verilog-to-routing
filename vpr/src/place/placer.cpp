@@ -286,6 +286,15 @@ void Placer::place() {
         // Table header
         log_printer_.print_place_status_header();
 
+        if (placer_opts_.place_algorithm.is_timing_driven()) {
+            critical_path_ = timing_info_->least_slack_critical_path();
+            save_placement_checkpoint_if_needed(placer_state_.mutable_block_locs(),
+                                                placement_checkpoint_,
+                                                timing_info_, costs_, critical_path_.delay());
+        }
+
+
+        unsigned loop_count = 0;
         // Outer loop of the simulated annealing begins
         do {
             vtr::Timer temperature_timer;
@@ -295,18 +304,43 @@ void Placer::place() {
             if (placer_opts_.place_algorithm.is_timing_driven()) {
                 critical_path_ = timing_info_->least_slack_critical_path();
 
+                if (placer_opts_.place_checkpointing && loop_count == 20) {
+                    const t_annealing_state& annealing_state = annealer_->get_annealing_state();
+                    PlaceCritParams crit_params;
+                    crit_params.crit_exponent = annealing_state.crit_exponent;
+                    crit_params.crit_limit = placer_opts_.place_crit_limit;
+                    // RESTORE THE PLACEMENT CHECKPOINT IF WORSE
+                    restore_best_placement(placer_state_,
+                                           placement_checkpoint_, timing_info_, costs_,
+                                           placer_criticalities_, placer_setup_slacks_, place_delay_model_,
+                                           pin_timing_invalidator_, crit_params, noc_cost_handler_);
+
+                    // FIXME: This crashes. Is this needed?
+                    /*
+                    net_cost_handler_.recompute_costs_from_scratch(place_delay_model_.get(),
+                                                                   placer_criticalities_.get(),
+                                                                   costs_);
+                                                                   */
+                    costs_.bb_cost = net_cost_handler_.comp_bb_cost(e_cost_methods::NORMAL).first;
+                    costs_.update_norm_factors();
+                    costs_.cost = costs_.get_total_cost(placer_opts_, noc_opts_);
+                }
+
                 // see if we should save the current placement solution as a checkpoint
                 if (placer_opts_.place_checkpointing && annealer_->get_agent_state() == e_agent_state::LATE_IN_THE_ANNEAL) {
                     save_placement_checkpoint_if_needed(placer_state_.mutable_block_locs(),
                                                         placement_checkpoint_,
                                                         timing_info_, costs_, critical_path_.delay());
                 }
+
             }
 
             // do a complete inner loop iteration
             annealer_->placement_inner_loop();
 
             log_printer_.print_place_status(temperature_timer.elapsed_sec());
+
+            loop_count++;
 
             // Outer loop of the simulated annealing ends
         } while (annealer_->outer_loop_update_state());
