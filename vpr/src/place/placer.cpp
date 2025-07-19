@@ -304,7 +304,7 @@ void Placer::place() {
             if (placer_opts_.place_algorithm.is_timing_driven()) {
                 critical_path_ = timing_info_->least_slack_critical_path();
 
-                if (placer_opts_.place_checkpointing && loop_count == 30) {
+                if (placer_opts_.place_checkpointing && loop_count == 10) {
                     const t_annealing_state& annealing_state = annealer_->get_annealing_state();
                     PlaceCritParams crit_params;
                     crit_params.crit_exponent = annealing_state.crit_exponent;
