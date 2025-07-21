@@ -112,6 +112,23 @@ static e_packer_state get_next_packer_state(e_packer_state current_packer_state,
         return e_packer_state::SUCCESS;
     }
 
+    // First thing to try for APPack (after unrelated and balanced) is to increase the max distance threshold of overused blocks.
+    if (appack_ctx.appack_options.use_appack) {
+        for (const auto& p : block_type_utils) {
+            if (p.second <= 1.0f)
+                continue;
+
+            // Check if we can increased the effort of the unrelated clustering.
+            float max_device_distance = appack_ctx.max_distance_threshold_manager.get_max_device_distance();
+
+            // Check if we can increase the max distance threshold for any of the
+            // overused block types.
+            float max_distance_th = appack_ctx.max_distance_threshold_manager.get_max_dist_threshold(*p.first);
+            if (max_distance_th < max_device_distance)
+                return e_packer_state::AP_INCREASE_MAX_DISPLACEMENT;
+        }
+    }
+
     // Check if there are overfilled floorplan regions.
     if (floorplan_regions_overfull) {
         // If there are overfilled region constraints, try to use attraction
@@ -158,26 +175,6 @@ static e_packer_state get_next_packer_state(e_packer_state current_packer_state,
         }
     }
 
-    // First thing to try for APPack (after unrelated and balanced) is to increase the max distance threshold of overused blocks.
-    if (appack_ctx.appack_options.use_appack) {
-        for (const auto& p : block_type_utils) {
-            if (p.second <= 1.0f)
-                continue;
-
-            // Check if we can increased the effort of the unrelated clustering.
-            float max_device_distance = appack_ctx.max_distance_threshold_manager.get_max_device_distance();
-
-            // Check if we can increase the max distance threshold for any of the
-            // overused block types.
-            float max_distance_th = appack_ctx.max_distance_threshold_manager.get_max_dist_threshold(*p.first);
-            if (max_distance_th < max_device_distance)
-                return e_packer_state::AP_INCREASE_MAX_DISPLACEMENT;
-        }
-    }
-
-    // If APPack is used, we can increase the max distance threshold to create
-    // a denser clustering. This will cause the packer to not adhere as well to
-    // the global placement.
     if (appack_ctx.appack_options.use_appack) {
         for (const auto& p : block_type_utils) {
             if (p.second <= 1.0f)
