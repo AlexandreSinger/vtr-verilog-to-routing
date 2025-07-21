@@ -118,6 +118,13 @@ static e_packer_state get_next_packer_state(e_packer_state current_packer_state,
             if (p.second <= 1.0f)
                 continue;
 
+            // If the utilization is so high that we know we will end up turning on unrelated clustering anyways, skip this increase.
+            // When we have to increase the max distance threshold too much, we end up losing a lot of quality.
+            // It is better to try and do low-effort unrelated clustering first.
+            // We will increase after turning on low-effort unrelated clustering.
+            if (p.second > 1.3f)
+                continue;
+
             // Check if we can increased the effort of the unrelated clustering.
             float max_device_distance = appack_ctx.max_distance_threshold_manager.get_max_device_distance();
 
@@ -180,22 +187,26 @@ static e_packer_state get_next_packer_state(e_packer_state current_packer_state,
             if (p.second <= 1.0f)
                 continue;
 
-            // Check if we can increased the effort of the unrelated clustering.
             float max_device_distance = appack_ctx.max_distance_threshold_manager.get_max_device_distance();
 
+            // Check if we can increase the max distance threshold for any of the
+            // overused block types.
+            float max_distance_th = appack_ctx.max_distance_threshold_manager.get_max_dist_threshold(*p.first);
+            if (max_distance_th < max_device_distance)
+                return e_packer_state::AP_INCREASE_MAX_DISPLACEMENT;
+        }
+        for (const auto& p : block_type_utils) {
+            if (p.second <= 1.0f)
+                continue;
+
+            float max_device_distance = appack_ctx.max_distance_threshold_manager.get_max_device_distance();
+
+            // Then try to use high effort UC as a last resort.
             float max_unrelated_tile_distance = appack_ctx.appack_options.max_unrelated_tile_distance[p.first->index];
             int max_unrelated_clustering_attempts = appack_ctx.appack_options.max_unrelated_clustering_attempts[p.first->index];
             if (max_unrelated_tile_distance < max_device_distance || max_unrelated_clustering_attempts < appack_ctx.appack_options.high_effort_max_unrelated_clustering_attempts) {
                 return e_packer_state::AP_USE_HIGH_EFFORT_UC;
             }
-
-            // Check if we can increase the max distance threshold for any of the
-            // overused block types.
-            /*
-            float max_distance_th = appack_ctx.max_distance_threshold_manager.get_max_dist_threshold(*p.first);
-            if (max_distance_th < max_device_distance)
-                return e_packer_state::AP_INCREASE_MAX_DISPLACEMENT;
-            */
         }
     }
 
