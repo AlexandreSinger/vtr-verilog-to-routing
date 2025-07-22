@@ -195,6 +195,18 @@ static e_packer_state get_next_packer_state(e_packer_state current_packer_state,
             if (max_distance_th < max_device_distance)
                 return e_packer_state::AP_INCREASE_MAX_DISPLACEMENT;
         }
+    }
+
+    // Check if we can increase the target density of the overused block types.
+    // This is a last resort since increasing the target pin density can have
+    // bad affects on quality and routability.
+    for (const auto& p : block_type_utils) {
+        const t_ext_pin_util& target_pin_util = external_pin_util_targets.get_pin_util(p.first->name);
+        if (p.second > 1.0f && (target_pin_util.input_pin_util < 1.0f || target_pin_util.output_pin_util < 1.0f))
+            return e_packer_state::INCREASE_OVERUSED_TARGET_PIN_UTILIZATION;
+    }
+
+    if (appack_ctx.appack_options.use_appack) {
         for (const auto& p : block_type_utils) {
             if (p.second <= 1.0f)
                 continue;
@@ -208,15 +220,6 @@ static e_packer_state get_next_packer_state(e_packer_state current_packer_state,
                 return e_packer_state::AP_USE_HIGH_EFFORT_UC;
             }
         }
-    }
-
-    // Check if we can increase the target density of the overused block types.
-    // This is a last resort since increasing the target pin density can have
-    // bad affects on quality and routability.
-    for (const auto& p : block_type_utils) {
-        const t_ext_pin_util& target_pin_util = external_pin_util_targets.get_pin_util(p.first->name);
-        if (p.second > 1.0f && (target_pin_util.input_pin_util < 1.0f || target_pin_util.output_pin_util < 1.0f))
-            return e_packer_state::INCREASE_OVERUSED_TARGET_PIN_UTILIZATION;
     }
 
     // If we got down here, that means that we could not find any packer option that would
