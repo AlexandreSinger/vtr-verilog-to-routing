@@ -1713,7 +1713,7 @@ static inline std::vector<ClusterBlockId> get_sorted_clusters_to_place(
  * Subsequent passes will then try to place clusters at exponentially farther
  * distances.
  */
-static inline void place_blocks_min_displacement(std::vector<ClusterBlockId>& clusters_to_place,
+static inline bool place_blocks_min_displacement(std::vector<ClusterBlockId>& clusters_to_place,
                                                  enum e_pad_loc_type pad_loc_type,
                                                  BlkLocRegistry& blk_loc_registry,
                                                  const PlaceMacros& place_macros,
@@ -1841,6 +1841,7 @@ static inline void place_blocks_min_displacement(std::vector<ClusterBlockId>& cl
     if (clusters_to_place.size() > 0) {
         VTR_LOG("Unable to place all clusters.\n");
         VTR_LOG("Clusters left unplaced:\n");
+        // FIXME: Increase the log verbosity of this.
         for (ClusterBlockId blk_id : clusters_to_place) {
             VTR_LOG("\t%s\n", cluster_netlist.block_name(blk_id).c_str());
         }
@@ -1850,7 +1851,10 @@ static inline void place_blocks_min_displacement(std::vector<ClusterBlockId>& cl
     // TODO: Should fall back on the original initial placer. Unless there is a
     //       bug in the code above, it could be that it is challenging to place
     //       for this circuit.
-    VTR_ASSERT(clusters_to_place.size() == 0);
+    if (clusters_to_place.size() > 0)
+        return false;
+
+    return true;
 }
 
 /**
@@ -1862,7 +1866,7 @@ static inline void place_blocks_min_displacement(std::vector<ClusterBlockId>& cl
  * each stage, the clusters are ordered based on heuristics such that the most
  * impactful clusters get first dibs on placement.
  */
-static inline void place_all_blocks_ap(enum e_pad_loc_type pad_loc_type,
+static inline bool place_all_blocks_ap(enum e_pad_loc_type pad_loc_type,
                                        BlkLocRegistry& blk_loc_registry,
                                        const PlaceMacros& place_macros,
                                        const FlatPlacementInfo& flat_placement_info) {
@@ -1892,13 +1896,17 @@ static inline void place_all_blocks_ap(enum e_pad_loc_type pad_loc_type,
 
     if (constrained_clusters.size() > 0) {
         VTR_LOG("Placing constrained clusters...\n");
-        place_blocks_min_displacement(constrained_clusters,
+        bool all_clusters_placed = place_blocks_min_displacement(constrained_clusters,
                                       pad_loc_type,
                                       blk_loc_registry,
                                       place_macros,
                                       cluster_netlist,
                                       flat_placement_info);
         VTR_LOG("\n");
+        if (!all_clusters_placed) {
+            VTR_LOG("Could not place all constrained clusters, falling back on original IP.\n");
+            return false;
+        }
     }
 
     // 2. Get all of the large macros and place them next. Large macros have a
@@ -1924,13 +1932,17 @@ static inline void place_all_blocks_ap(enum e_pad_loc_type pad_loc_type,
 
     if (large_macro_clusters.size() > 0) {
         VTR_LOG("Placing clusters that are part of larger macros...\n");
-        place_blocks_min_displacement(large_macro_clusters,
+        bool all_clusters_placed = place_blocks_min_displacement(large_macro_clusters,
                                       pad_loc_type,
                                       blk_loc_registry,
                                       place_macros,
                                       cluster_netlist,
                                       flat_placement_info);
         VTR_LOG("\n");
+        if (!all_clusters_placed) {
+            VTR_LOG("Could not place all large macros, falling back on original IP.\n");
+            return false;
+        }
     }
 
     // 3. Place the rest of the clusters. These clusters will be unconstrained
@@ -1948,14 +1960,20 @@ static inline void place_all_blocks_ap(enum e_pad_loc_type pad_loc_type,
 
     if (clusters_to_place.size() > 0) {
         VTR_LOG("Placing general clusters...\n");
-        place_blocks_min_displacement(clusters_to_place,
+        bool all_clusters_placed = place_blocks_min_displacement(clusters_to_place,
                                       pad_loc_type,
                                       blk_loc_registry,
                                       place_macros,
                                       cluster_netlist,
                                       flat_placement_info);
         VTR_LOG("\n");
+        if (!all_clusters_placed) {
+            VTR_LOG("Could not place all clusters, falling back on original IP.\n");
+            return false;
+        }
     }
+
+    return true;
 }
 
 void initial_placement(const t_placer_opts& placer_opts,
@@ -1992,10 +2010,24 @@ void initial_placement(const t_placer_opts& placer_opts,
 
         //Place all blocks
         if (flat_placement_info.valid) {
-            place_all_blocks_ap(placer_opts.pad_loc_type,
+            bool all_blocks_placed = place_all_blocks_ap(placer_opts.pad_loc_type,
                                 blk_loc_registry,
                                 place_macros,
                                 flat_placement_info);
+            // FIXME: This fallback can be cleaned up.
+            if (!all_blocks_placed) {
+                // Reset the placement solution and fall back on the original algorithm.
+                blk_loc_registry.clear_all_grid_locs();
+                if (strlen(constraints_file) != 0) {
+                    read_constraints(constraints_file, blk_loc_registry);
+                }
+
+                vtr::vector<ClusterBlockId, t_block_score> block_scores = assign_block_scores(place_macros);
+                place_all_blocks(placer_opts, block_scores, placer_opts.pad_loc_type,
+                                 constraints_file, blk_loc_registry, place_macros,
+                                 flat_placement_info, rng);
+
+            }
         } else {
             //Assign scores to blocks and placement macros according to how difficult they are to place
             vtr::vector<ClusterBlockId, t_block_score> block_scores = assign_block_scores(place_macros);
