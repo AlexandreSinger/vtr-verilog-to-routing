@@ -162,7 +162,7 @@ FlatPlacementDensityManager::FlatPlacementDensityManager(const APNetlist& ap_net
                 vtr::Rect<double> new_bin_region(vtr::Point<double>(x, y),
                                                  vtr::Point<double>(x + tw,
                                                                     y + th));
-                FlatPlacementBinId new_bin_id = bins_.create_bin(new_bin_region);
+                FlatPlacementBinId new_bin_id = bins_.create_bin(new_bin_region, layer);
 
                 // Add the bin to the spatial lookup
                 bin_spatial_lookup_[layer][x][y] = new_bin_id;
@@ -307,8 +307,7 @@ void FlatPlacementDensityManager::export_placement_from_bins(PartialPlacement& p
                                                                    p_placement);
         p_placement.block_x_locs[blk_id] = new_blk_pos.x();
         p_placement.block_y_locs[blk_id] = new_blk_pos.y();
-        // NOTE: This code currently does not support 3D FPGAs.
-        VTR_ASSERT(std::floor(p_placement.block_layer_nums[blk_id]) == 0.0);
+        p_placement.block_layer_nums[blk_id] = bins_.bin_layer(blk_bin_id);
     }
 }
 
