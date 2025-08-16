@@ -152,6 +152,8 @@ class AnalyticalSolver {
     ///        on the grid.
     size_t device_grid_height_;
 
+    size_t device_grid_num_layers_;
+
     /// @brief The AP timing tradeoff term used during global placement. Decides
     ///        how much the solver cares about timing vs wirelength.
     float ap_timing_tradeoff_;
@@ -482,6 +484,10 @@ class B2BSolver : public AnalyticalSolver {
     ///        number, the solver will focus more on timing and less on wirelength.
     static constexpr double timing_slope_fac_ = 0.75;
 
+
+    // FIXME: Create a scaling factor for the Z dimension vs the x/y dimension
+    //        for distance. Maybe create a distance manager class.
+
   public:
     B2BSolver(const APNetlist& ap_netlist,
               const DeviceGrid& device_grid,
@@ -496,7 +502,8 @@ class B2BSolver : public AnalyticalSolver {
                            ap_timing_tradeoff,
                            log_verbosity)
         , pre_cluster_timing_manager_(pre_cluster_timing_manager)
-        , place_delay_model_(place_delay_model) {}
+        , place_delay_model_(place_delay_model) {
+    }
 
     /**
      * @brief Perform an iteration of the B2B solver, storing the result into
@@ -658,7 +665,12 @@ class B2BSolver : public AnalyticalSolver {
      */
     void store_solution_into_placement(Eigen::VectorXd& x_soln,
                                        Eigen::VectorXd& y_soln,
+                                       Eigen::VectorXd& z_soln,
                                        PartialPlacement& p_placement);
+
+    inline bool is_multi_die() const {
+        return device_grid_num_layers_ > 1;
+    }
 
     // The following are variables used to store the system of equations to be
     // solved in the x and y dimensions. The equations are of the form:
@@ -671,22 +683,28 @@ class B2BSolver : public AnalyticalSolver {
     Eigen::SparseMatrix<double> A_sparse_x;
     /// @brief The coefficient / connectivity matrix for the y dimension.
     Eigen::SparseMatrix<double> A_sparse_y;
+
+    Eigen::SparseMatrix<double> A_sparse_z;
     /// @brief The constant vector in the x dimension.
     Eigen::VectorXd b_x;
     /// @brief The constant vector in the y dimension.
     Eigen::VectorXd b_y;
+
+    Eigen::VectorXd b_z;
 
     // The following is the solution of the previous iteration of this solver.
     // They are updated at the end of solve() and are used as the starting point
     // for the next call to solve.
     vtr::vector<APBlockId, double> block_x_locs_solved;
     vtr::vector<APBlockId, double> block_y_locs_solved;
+    vtr::vector<APBlockId, double> block_z_locs_solved;
 
     // The following are the legalized solution coming into the analytical solver
     // (other than the first iteration). These are stored to be used as anchor
     // blocks during the solver.
     vtr::vector<APBlockId, double> block_x_locs_legalized;
     vtr::vector<APBlockId, double> block_y_locs_legalized;
+    vtr::vector<APBlockId, double> block_z_locs_legalized;
 
     /// @brief The total number of CG iterations that this solver has performed
     ///        so far. This can be a useful metric for the amount of work the

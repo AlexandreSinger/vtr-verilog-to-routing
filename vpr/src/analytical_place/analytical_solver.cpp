@@ -126,6 +126,7 @@ AnalyticalSolver::AnalyticalSolver(const APNetlist& netlist,
     , net_weights_(netlist.nets().size(), 1.0f)
     , device_grid_width_(device_grid.width())
     , device_grid_height_(device_grid.height())
+    , device_grid_num_layers_(device_grid.get_num_layers())
     , ap_timing_tradeoff_(ap_timing_tradeoff)
     , log_verbosity_(log_verbosity) {
 
@@ -557,6 +558,13 @@ void B2BSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
             }
             block_x_locs_solved = p_placement.block_x_locs;
             block_y_locs_solved = p_placement.block_y_locs;
+
+            if (is_multi_die()) {
+                std::fill(p_placement.block_layer_nums.begin(),
+                          p_placement.block_layer_nums.end(),
+                          device_grid_num_layers_ / 2.0);
+                block_z_locs_solved = p_placement.block_layer_nums;
+            }
             return;
         }
 
@@ -576,10 +584,16 @@ void B2BSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
         // Save the legalized solution; we need it for the anchors.
         block_x_locs_legalized = p_placement.block_x_locs;
         block_y_locs_legalized = p_placement.block_y_locs;
+        if (is_multi_die()) {
+            block_z_locs_legalized = p_placement.block_layer_nums;
+        }
 
         // Store last solved position into p_placement for b2b model
         p_placement.block_x_locs = block_x_locs_solved;
         p_placement.block_y_locs = block_y_locs_solved;
+        if (is_multi_die()) {
+            p_placement.block_layer_nums = block_z_locs_solved;
+        }
     }
 
     // Run the B2B solver using p_placement as a starting point.
@@ -588,27 +602,36 @@ void B2BSolver::solve(unsigned iteration, PartialPlacement& p_placement) {
     // Store the solved solutions for the next iteration.
     block_x_locs_solved = p_placement.block_x_locs;
     block_y_locs_solved = p_placement.block_y_locs;
+    if (is_multi_die()) {
+        block_z_locs_solved = p_placement.block_layer_nums;
+    }
 }
 
 void B2BSolver::initialize_placement_least_dense(PartialPlacement& p_placement) {
     // Find a gap for the blocks such that each block can fit onto the device
     // if they were evenly spaced by this gap.
-    double gap = std::sqrt(device_grid_height_ * device_grid_width_ / static_cast<double>(num_moveable_blocks_));
+    size_t num_tiles_per_layer = device_grid_width_ * device_grid_width_;
+    VTR_ASSERT_SAFE(device_grid_num_layers_ > 0);
+    unsigned num_blocks_per_layer = num_moveable_blocks_ / device_grid_num_layers_;
+    double gap = std::sqrt(num_tiles_per_layer / static_cast<double>(num_blocks_per_layer));
 
     // Assuming this gap, get how many columns/rows of blocks there will be.
     size_t cols = std::ceil(device_grid_width_ / gap);
     size_t rows = std::ceil(device_grid_height_ / gap);
 
     // Spread the blocks at these grid coordinates.
-    for (size_t r = 0; r <= rows; r++) {
-        for (size_t c = 0; c <= cols; c++) {
-            size_t i = r * cols + c;
-            if (i >= num_moveable_blocks_)
-                break;
-            APRowId row_id = APRowId(i);
-            APBlockId blk_id = row_id_to_blk_id_[row_id];
-            p_placement.block_x_locs[blk_id] = c * gap;
-            p_placement.block_y_locs[blk_id] = r * gap;
+    for (size_t d = 0; d < device_grid_num_layers_; d++) {
+        for (size_t r = 0; r <= rows; r++) {
+            for (size_t c = 0; c <= cols; c++) {
+                size_t i = r * cols + c;
+                if (i >= num_moveable_blocks_)
+                    break;
+                APRowId row_id = APRowId(i);
+                APBlockId blk_id = row_id_to_blk_id_[row_id];
+                p_placement.block_x_locs[blk_id] = c * gap;
+                p_placement.block_y_locs[blk_id] = r * gap;
+                p_placement.block_layer_nums[blk_id] = d;
+            }
         }
     }
 
@@ -617,6 +640,9 @@ void B2BSolver::initialize_placement_least_dense(PartialPlacement& p_placement) 
     for (APBlockId blk_id : disconnected_blocks_) {
         p_placement.block_x_locs[blk_id] = device_grid_width_ / 2.0;
         p_placement.block_y_locs[blk_id] = device_grid_height_ / 2.0;
+        if (is_multi_die()) {
+            p_placement.block_layer_nums[blk_id] = device_grid_num_layers_ / 2.0;
+        }
     }
 }
 
@@ -625,11 +651,15 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
     // A good guess for B2B is the last solved solution.
     Eigen::VectorXd x_guess(num_moveable_blocks_);
     Eigen::VectorXd y_guess(num_moveable_blocks_);
+    Eigen::VectorXd z_guess(num_moveable_blocks_);
     for (size_t row_id_idx = 0; row_id_idx < num_moveable_blocks_; row_id_idx++) {
         APRowId row_id = APRowId(row_id_idx);
         APBlockId blk_id = row_id_to_blk_id_[row_id];
         x_guess(row_id_idx) = p_placement.block_x_locs[blk_id];
         y_guess(row_id_idx) = p_placement.block_y_locs[blk_id];
+        if (is_multi_die()) {
+            z_guess(row_id_idx) = p_placement.block_layer_nums[blk_id];
+        }
     }
 
     // Create a timer to keep track of how long each part of the solver take.
@@ -687,10 +717,25 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
         total_num_cg_iters_ += cg_y.iterations();
         VTR_LOGV(log_verbosity_ >= 20, "\t\tNum CG-y iter: %zu\n", cg_y.iterations());
 
+        Eigen::VectorXd z;
+        if (is_multi_die()) {
+            // FIXME: Move this solving stuff into a hellper function. We can then
+            //        call that function for each dimension.
+            Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper> cg_z;
+            cg_z.compute(A_sparse_z);
+            VTR_ASSERT_SAFE_MSG(cg_y.info() == Eigen::Success, "Conjugate Gradient failed at compute for A_z!");
+            cg_z.setMaxIterations(max_cg_iterations_);
+
+            // Solve the z dimension.
+            z = cg_z.solveWithGuess(b_z, z_guess);
+            total_num_cg_iters_ += cg_z.iterations();
+            VTR_LOGV(log_verbosity_ >= 20, "\t\tNum CG-z iter: %zu\n", cg_z.iterations());
+        }
+
         total_time_spent_solving_linear_system_ += runtime_timer.elapsed_sec() - solve_linear_system_start_time;
 
         // Save the result into the partial placement object.
-        store_solution_into_placement(x, y, p_placement);
+        store_solution_into_placement(x, y, z, p_placement);
 
         // If the current HPWL is larger than the previous HPWL (i.e. the HPWL
         // got worst since last B2B iter) or the gap between the two solutions
@@ -712,6 +757,10 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
         // Update the guesses with the most recent answer
         x_guess = x;
         y_guess = y;
+
+        if (is_multi_die()) {
+            z_guess = z;
+        }
     }
 
     // Disconnected blocks are not optimized by the solver.
@@ -722,6 +771,9 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
         for (APBlockId blk_id : disconnected_blocks_) {
             p_placement.block_x_locs[blk_id] = device_grid_width_ / 2.0;
             p_placement.block_y_locs[blk_id] = device_grid_height_ / 2.0;
+            if (is_multi_die()) {
+                p_placement.block_layer_nums[blk_id] = device_grid_num_layers_ / 2.0;
+            }
         }
     } else {
         // If a legalized solution is available (after the first iteration of GP), then
@@ -729,6 +781,9 @@ void B2BSolver::b2b_solve_loop(unsigned iteration, PartialPlacement& p_placement
         for (APBlockId blk_id : disconnected_blocks_) {
             p_placement.block_x_locs[blk_id] = block_x_locs_legalized[blk_id];
             p_placement.block_y_locs[blk_id] = block_y_locs_legalized[blk_id];
+            if (is_multi_die()) {
+                p_placement.block_layer_nums[blk_id] = block_z_locs_legalized[blk_id];
+            }
         }
     }
 }
@@ -746,6 +801,9 @@ struct APNetBounds {
     APBlockId min_y_blk;
     /// @brief The top-most block in the net.
     APBlockId max_y_blk;
+
+    APBlockId min_z_blk;
+    APBlockId max_z_blk;
 };
 
 } // namespace
@@ -770,12 +828,15 @@ static inline APNetBounds get_unique_net_bounds(APNetId net_id,
     double min_x_pos = std::numeric_limits<double>::max();
     double max_y_pos = std::numeric_limits<double>::lowest();
     double min_y_pos = std::numeric_limits<double>::max();
+    double max_z_pos = std::numeric_limits<double>::lowest();
+    double min_z_pos = std::numeric_limits<double>::max();
 
     for (APPinId pin_id : netlist.net_pins(net_id)) {
         // Update the bounds based on the position of the block that has this pin.
         APBlockId blk_id = netlist.pin_block(pin_id);
         double x_pos = p_placement.block_x_locs[blk_id];
         double y_pos = p_placement.block_y_locs[blk_id];
+        double z_pos = p_placement.block_layer_nums[blk_id];
         if (x_pos < min_x_pos) {
             min_x_pos = x_pos;
             bounds.min_x_blk = blk_id;
@@ -784,6 +845,10 @@ static inline APNetBounds get_unique_net_bounds(APNetId net_id,
             min_y_pos = y_pos;
             bounds.min_y_blk = blk_id;
         }
+        if (z_pos < min_z_pos) {
+            min_z_pos = z_pos;
+            bounds.min_z_blk = blk_id;
+        }
         if (x_pos > max_x_pos) {
             max_x_pos = x_pos;
             bounds.max_x_blk = blk_id;
@@ -791,6 +856,10 @@ static inline APNetBounds get_unique_net_bounds(APNetId net_id,
         if (y_pos > max_y_pos) {
             max_y_pos = y_pos;
             bounds.max_y_blk = blk_id;
+        }
+        if (z_pos > max_z_pos) {
+            max_z_pos = z_pos;
+            bounds.max_z_blk = blk_id;
         }
 
         // In the case of a tie, we do not want to have the same blocks as bounds.
@@ -804,6 +873,10 @@ static inline APNetBounds get_unique_net_bounds(APNetId net_id,
             max_y_pos = y_pos;
             bounds.max_y_blk = blk_id;
         }
+        if (z_pos == max_z_pos && bounds.min_z_blk != blk_id) {
+            max_z_pos = z_pos;
+            bounds.max_z_blk = blk_id;
+        }
     }
 
     // Ensure the same block is set as the bounds.
@@ -812,6 +885,7 @@ static inline APNetBounds get_unique_net_bounds(APNetId net_id,
     // context.
     VTR_ASSERT_SAFE(bounds.min_x_blk != bounds.max_x_blk);
     VTR_ASSERT_SAFE(bounds.min_y_blk != bounds.max_y_blk);
+    VTR_ASSERT_SAFE(bounds.min_z_blk != bounds.max_z_blk);
 
     return bounds;
 }
@@ -874,6 +948,7 @@ std::pair<double, double> B2BSolver::get_delay_derivative(APBlockId driver_blk,
 
     // TODO: Handle 3D FPGAs for this method.
     int layer_num = 0;
+    VTR_ASSERT_SAFE(!is_multi_die());
     VTR_ASSERT_SAFE_MSG(p_placement.block_layer_nums[driver_blk] == layer_num && p_placement.block_layer_nums[sink_blk] == layer_num,
                         "3D FPGAs not supported yet in the B2B solver");
 
@@ -1008,6 +1083,9 @@ std::pair<double, double> B2BSolver::get_delay_normalization_facs(APBlockId driv
     // tile. This should be able to remove the units without changing the value
     // too much.
 
+    // FIXME: Handle multi-die for this function.
+    VTR_ASSERT_SAFE(!is_multi_die());
+
     // Similar to calculating the derivative, we want to use the legalized position
     // of the driver block to try and estimate the delay from that block type.
     t_physical_tile_loc driver_block_loc(block_x_locs_legalized[driver_blk],
@@ -1048,6 +1126,11 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
     b_x = Eigen::VectorXd::Zero(num_moveable_blocks_);
     b_y = Eigen::VectorXd::Zero(num_moveable_blocks_);
 
+    if (is_multi_die()) {
+        A_sparse_z = Eigen::SparseMatrix<double>(num_moveable_blocks_, num_moveable_blocks_);
+        b_z = Eigen::VectorXd::Zero(num_moveable_blocks_);
+    }
+
     // Create triplet lists to store the sparse positions to update and reserve
     // space for them.
     size_t total_num_pins_in_netlist = netlist_.pins().size();
@@ -1055,6 +1138,10 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
     triplet_list_x.reserve(total_num_pins_in_netlist);
     std::vector<Eigen::Triplet<double>> triplet_list_y;
     triplet_list_y.reserve(total_num_pins_in_netlist);
+    std::vector<Eigen::Triplet<double>> triplet_list_z;
+    if (is_multi_die()) {
+        triplet_list_z.resize(total_num_pins_in_netlist);
+    }
 
     for (APNetId net_id : netlist_.nets()) {
         if (netlist_.net_is_ignored(net_id))
@@ -1086,12 +1173,23 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
                 add_connection_to_system(blk_id, net_bounds.max_y_blk, num_pins, wl_net_w, p_placement.block_y_locs, triplet_list_y, b_y);
                 add_connection_to_system(blk_id, net_bounds.min_y_blk, num_pins, wl_net_w, p_placement.block_y_locs, triplet_list_y, b_y);
             }
+            if (is_multi_die() && blk_id != net_bounds.max_z_blk && blk_id != net_bounds.min_z_blk) {
+                // FIXME: Make class variable.
+                double multidie_net_w = wl_net_w * 10.0;
+                add_connection_to_system(blk_id, net_bounds.max_z_blk, num_pins, multidie_net_w, p_placement.block_layer_nums, triplet_list_z, b_z);
+                add_connection_to_system(blk_id, net_bounds.min_z_blk, num_pins, multidie_net_w, p_placement.block_layer_nums, triplet_list_z, b_z);
+            }
         }
 
         // Connect the bounds to each other. Its just easier to put these here
         // instead of in the for loop above.
         add_connection_to_system(net_bounds.max_x_blk, net_bounds.min_x_blk, num_pins, wl_net_w, p_placement.block_x_locs, triplet_list_x, b_x);
         add_connection_to_system(net_bounds.max_y_blk, net_bounds.min_y_blk, num_pins, wl_net_w, p_placement.block_y_locs, triplet_list_y, b_y);
+        if (is_multi_die()) {
+            // FIXME: Make class variable.
+            double multidie_net_w = wl_net_w * 10.0;
+            add_connection_to_system(net_bounds.max_z_blk, net_bounds.min_z_blk, num_pins, multidie_net_w, p_placement.block_layer_nums, triplet_list_z, b_z);
+        }
 
         // ====================================================================
         // Timing Connections
@@ -1101,6 +1199,7 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
         // positions to compute the delay derivative, which do not exist until
         // the next iteration. Its fine to do one wirelength driven iteration first.
         if (pre_cluster_timing_manager_.is_valid() && iteration != 0) {
+            VTR_ASSERT_SAFE(!is_multi_die());
             // Create connections from each driver pin to each of it's sink pins.
             // This will incentivize shrinking the distance from drivers to sinks
             // of connections which would improve the timing.
@@ -1162,6 +1261,9 @@ void B2BSolver::init_linear_system(PartialPlacement& p_placement, unsigned itera
     // Build the sparse connectivity matrices from the triplets.
     A_sparse_x.setFromTriplets(triplet_list_x.begin(), triplet_list_x.end());
     A_sparse_y.setFromTriplets(triplet_list_y.begin(), triplet_list_y.end());
+    if (is_multi_die()) {
+        A_sparse_z.setFromTriplets(triplet_list_z.begin(), triplet_list_z.end());
+    }
 }
 
 // This function adds anchors for legalized solution. Anchors are treated as fixed node,
@@ -1184,12 +1286,20 @@ void B2BSolver::update_linear_system_with_anchors(unsigned iteration) {
         A_sparse_y.coeffRef(row_id_idx, row_id_idx) += pseudo_w_y;
         b_x(row_id_idx) += pseudo_w_x * block_x_locs_legalized[blk_id];
         b_y(row_id_idx) += pseudo_w_y * block_y_locs_legalized[blk_id];
+
+        if (is_multi_die()) {
+            double pseudo_w_z = coeff_pseudo_anchor * 2.0;
+            A_sparse_z.coeffRef(row_id_idx, row_id_idx) += pseudo_w_z;
+            b_z(row_id_idx) += pseudo_w_z * block_z_locs_legalized[blk_id];
+        }
     }
 }
 
 void B2BSolver::store_solution_into_placement(Eigen::VectorXd& x_soln,
                                               Eigen::VectorXd& y_soln,
+                                              Eigen::VectorXd& z_soln,
                                               PartialPlacement& p_placement) {
+    // FIXME: Make this function per dimension.
     for (size_t row_id_idx = 0; row_id_idx < num_moveable_blocks_; row_id_idx++) {
         // Since we are capping the number of iterations, the solver may not
         // have enough time to converge on a solution that is on the device.
@@ -1214,6 +1324,15 @@ void B2BSolver::store_solution_into_placement(Eigen::VectorXd& x_soln,
         APBlockId blk_id = row_id_to_blk_id_[row_id];
         p_placement.block_x_locs[blk_id] = x_soln[row_id_idx];
         p_placement.block_y_locs[blk_id] = y_soln[row_id_idx];
+
+        if (is_multi_die()) {
+            if (z_soln[row_id_idx] < epsilon)
+                z_soln[row_id_idx] = epsilon;
+            if (z_soln[row_id_idx] >= device_grid_num_layers_)
+                z_soln[row_id_idx] = device_grid_num_layers_ - epsilon;
+
+            p_placement.block_layer_nums[blk_id] = z_soln[row_id_idx];
+        }
     }
 }
 

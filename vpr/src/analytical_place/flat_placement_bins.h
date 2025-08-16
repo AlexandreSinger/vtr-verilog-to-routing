@@ -62,10 +62,12 @@ class FlatPlacementBins {
      *      The rectangular region of the FPGA device that this bin will
      *      represent.
      */
-    inline FlatPlacementBinId create_bin(const vtr::Rect<double>& bin_region) {
+    inline FlatPlacementBinId create_bin(const vtr::Rect<double>& bin_region,
+                                         size_t bin_layer) {
         FlatPlacementBinId new_bin_id = FlatPlacementBinId(bin_ids_.size());
         bin_ids_.push_back(new_bin_id);
         bin_region_.push_back(bin_region);
+        bin_layer_.push_back(bin_layer);
         bin_contained_blocks_.resize(bin_contained_blocks_.size() + 1);
         return new_bin_id;
     }
@@ -107,6 +109,11 @@ class FlatPlacementBins {
     inline const vtr::Rect<double>& bin_region(FlatPlacementBinId bin_id) const {
         VTR_ASSERT(bin_id.is_valid());
         return bin_region_[bin_id];
+    }
+
+    inline size_t bin_layer(FlatPlacementBinId bin_id) const {
+        VTR_ASSERT(bin_id.is_valid());
+        return bin_layer_[bin_id];
     }
 
     /**
@@ -160,6 +167,10 @@ class FlatPlacementBins {
             VTR_LOG("Bin Verify: bin_region_ not the correct size.\n");
             return false;
         }
+        if (bin_layer_.size() != num_bins) {
+            VTR_LOG("Bin Verify: bin_layer_ not the correct size.\n");
+            return false;
+        }
 
         // Make sure that the bin_contained_blocks_ and the block_bin_ are
         // consistent.
@@ -188,5 +199,8 @@ class FlatPlacementBins {
 
     /// @brief The region that each bin represents on the FPGA grid.
     // TODO: For 3D FPGAs, this should be a 3D rectangle.
+    //  - Not quite, we can assume that bins do not cross dies for now.
     vtr::vector_map<FlatPlacementBinId, vtr::Rect<double>> bin_region_;
+
+    vtr::vector_map<FlatPlacementBinId, size_t> bin_layer_;
 };

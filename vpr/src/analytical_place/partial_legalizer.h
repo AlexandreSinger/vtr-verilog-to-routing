@@ -261,7 +261,8 @@ typedef typename std::vector<FlatPlacementBinId> FlatPlacementBinCluster;
  */
 enum class e_partition_dir {
     VERTICAL,
-    HORIZONTAL
+    HORIZONTAL,
+    PLANAR
 };
 
 /**
@@ -277,6 +278,9 @@ struct SpreadingWindow {
 
     /// @brief The 2D region of space that this window covers.
     vtr::Rect<double> region;
+
+    size_t layer_low;
+    size_t layer_high;
 };
 
 /**
@@ -327,28 +331,31 @@ class PerPrimitiveDimPrefixSum2D {
      * Uses the density manager to get the size of the placeable region.
      *
      * The lookup is a lambda used to populate the prefix sum. It provides
-     * the model index, x, and y to be populated.
+     * the model index, layer, x, and y to be populated.
      */
     PerPrimitiveDimPrefixSum2D(const FlatPlacementDensityManager& density_manager,
-                               std::function<float(PrimitiveVectorDim, size_t, size_t)> lookup);
+                               std::function<float(PrimitiveVectorDim, size_t, size_t, size_t)> lookup);
 
     /**
      * @brief Get the sum for a given dim over the given region.
      */
     float get_dim_sum(PrimitiveVectorDim dim,
-                      const vtr::Rect<double>& region) const;
+                      const vtr::Rect<double>& region,
+                      size_t layer) const;
 
     /**
      * @brief Get the multi-dimensional sum over the given dims over
      *        the given region.
      */
     PrimitiveVector get_sum(const std::vector<PrimitiveVectorDim>& dims,
-                            const vtr::Rect<double>& region) const;
+                            const vtr::Rect<double>& region,
+                            size_t layer) const;
 
   private:
     /// @brief Per-Dim Prefix Sums. These are stored as fixed-point numbers to
     ///        prevent error accumulations due to numerical imprecisions.
-    vtr::vector<PrimitiveVectorDim, vtr::PrefixSum2D<uint64_t>> dim_prefix_sum_;
+    ///         [layer][vector_dim] -> 2d_prefix_sum
+    std::vector<vtr::vector<PrimitiveVectorDim, vtr::PrefixSum2D<uint64_t>>> layer_dim_prefix_sum_;
 };
 
 /// @brief A unique ID of a group of primitive dims created by the PrimitiveDimGrouper class.

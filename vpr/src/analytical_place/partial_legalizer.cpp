@@ -82,6 +82,7 @@ static std::unordered_set<FlatPlacementBinId> get_direct_neighbors_of_bin(
     int bl_y = bin_region.bottom_left().y();
     size_t bin_width = bin_region.width();
     size_t bin_height = bin_region.height();
+    size_t bin_layer = density_manager.flat_placement_bins().bin_layer(bin_id);
     // This is an unfortunate consequence of using double precision to store
     // the bounding box. We need to ensure that the bin represents a tile (not
     // part of a tile). If it did represent part of a tile, this algorithm
@@ -90,24 +91,37 @@ static std::unordered_set<FlatPlacementBinId> get_direct_neighbors_of_bin(
 
     double placeable_region_width, placeable_region_height, placeable_region_depth;
     std::tie(placeable_region_width, placeable_region_height, placeable_region_depth) = density_manager.get_overall_placeable_region_size();
-    // Current does not handle 3D FPGAs
-    VTR_ASSERT(placeable_region_depth == 1.0);
 
     // Add the neighbors.
     std::unordered_set<FlatPlacementBinId> neighbor_bin_ids;
     // Add unique tiles on left and right sides
     for (size_t ty = bl_y; ty < bl_y + bin_height; ty++) {
         if (bl_x >= 1)
-            neighbor_bin_ids.insert(density_manager.get_bin(bl_x - 1, ty, 0.0));
+            neighbor_bin_ids.insert(density_manager.get_bin(bl_x - 1, ty, bin_layer));
         if (bl_x <= (int)(placeable_region_width - bin_width - 1))
-            neighbor_bin_ids.insert(density_manager.get_bin(bl_x + bin_width, ty, 0.0));
+            neighbor_bin_ids.insert(density_manager.get_bin(bl_x + bin_width, ty, bin_layer));
     }
     // Add unique tiles on the top and bottom
     for (size_t tx = bl_x; tx < bl_x + bin_width; tx++) {
         if (bl_y >= 1)
-            neighbor_bin_ids.insert(density_manager.get_bin(tx, bl_y - 1, 0.0));
+            neighbor_bin_ids.insert(density_manager.get_bin(tx, bl_y - 1, bin_layer));
         if (bl_y <= (int)(placeable_region_height - bin_height - 1))
-            neighbor_bin_ids.insert(density_manager.get_bin(tx, bl_y + bin_height, 0.0));
+            neighbor_bin_ids.insert(density_manager.get_bin(tx, bl_y + bin_height, bin_layer));
+    }
+    // Add layers above and below (if any)
+    if (bin_layer >= 1) {
+        for (size_t tx = bl_x; tx < bl_x + bin_width; tx++) {
+            for (size_t ty = bl_y; ty < bl_y + bin_height; ty++) {
+                neighbor_bin_ids.insert(density_manager.get_bin(tx, ty, bin_layer - 1));
+            }
+        }
+    }
+    if (bin_layer < placeable_region_depth - 1) {
+        for (size_t tx = bl_x; tx < bl_x + bin_width; tx++) {
+            for (size_t ty = bl_y; ty < bl_y + bin_height; ty++) {
+                neighbor_bin_ids.insert(density_manager.get_bin(tx, ty, bin_layer + 1));
+            }
+        }
     }
 
     // A bin cannot be a neighbor with itself.
@@ -686,36 +700,40 @@ void FlowBasedLegalizer::legalize(PartialPlacement& p_placement) {
 }
 
 PerPrimitiveDimPrefixSum2D::PerPrimitiveDimPrefixSum2D(const FlatPlacementDensityManager& density_manager,
-                                                       std::function<float(PrimitiveVectorDim, size_t, size_t)> lookup) {
+                                                       std::function<float(PrimitiveVectorDim, size_t, size_t, size_t)> lookup) {
     // Get the size that the prefix sums should be.
-    size_t width, height, layers;
-    std::tie(width, height, layers) = density_manager.get_overall_placeable_region_size();
+    size_t width, height, num_layers;
+    std::tie(width, height, num_layers) = density_manager.get_overall_placeable_region_size();
 
     // Create each of the prefix sums.
     const PrimitiveDimManager& dim_manager = density_manager.mass_calculator().get_dim_manager();
-    dim_prefix_sum_.resize(dim_manager.dims().size());
-    for (PrimitiveVectorDim dim : density_manager.get_used_dims_mask().get_non_zero_dims()) {
-        dim_prefix_sum_[dim] = vtr::PrefixSum2D<uint64_t>(
-            width,
-            height,
-            [&](size_t x, size_t y) {
-                // Convert the floating point value into fixed point to prevent
-                // error accumulation in the prefix sum.
-                // Note: We ceil here since we do not want to lose information
-                //       on numbers that get very close to 0.
-                float val = lookup(dim, x, y);
-                VTR_ASSERT_SAFE_MSG(val >= 0.0f,
-                                    "PerPrimitiveDimPrefixSum2D expected to only hold positive values");
-                return std::ceil(val * fractional_scale_);
-            });
+    layer_dim_prefix_sum_.resize(num_layers);
+    for (size_t layer = 0; layer < num_layers; layer++) {
+        layer_dim_prefix_sum_[layer].resize(dim_manager.dims().size());
+        for (PrimitiveVectorDim dim : density_manager.get_used_dims_mask().get_non_zero_dims()) {
+            layer_dim_prefix_sum_[layer][dim] = vtr::PrefixSum2D<uint64_t>(
+                width,
+                height,
+                [&](size_t x, size_t y) {
+                    // Convert the floating point value into fixed point to prevent
+                    // error accumulation in the prefix sum.
+                    // Note: We ceil here since we do not want to lose information
+                    //       on numbers that get very close to 0.
+                    float val = lookup(dim, x, y, layer);
+                    VTR_ASSERT_SAFE_MSG(val >= 0.0f,
+                                        "PerPrimitiveDimPrefixSum2D expected to only hold positive values");
+                    return std::ceil(val * fractional_scale_);
+                });
+        }
     }
 }
 
 float PerPrimitiveDimPrefixSum2D::get_dim_sum(PrimitiveVectorDim dim,
-                                              const vtr::Rect<double>& region) const {
+                                              const vtr::Rect<double>& region,
+                                              size_t layer) const {
     VTR_ASSERT_SAFE(dim.is_valid());
     // Get the sum over the given region.
-    uint64_t sum = dim_prefix_sum_[dim].get_sum(region.xmin(),
+    uint64_t sum = layer_dim_prefix_sum_[layer][dim].get_sum(region.xmin(),
                                                 region.ymin(),
                                                 region.xmax() - 1,
                                                 region.ymax() - 1);
@@ -726,11 +744,12 @@ float PerPrimitiveDimPrefixSum2D::get_dim_sum(PrimitiveVectorDim dim,
 }
 
 PrimitiveVector PerPrimitiveDimPrefixSum2D::get_sum(const std::vector<PrimitiveVectorDim>& dims,
-                                                    const vtr::Rect<double>& region) const {
+                                                    const vtr::Rect<double>& region,
+                                                    size_t layer) const {
     PrimitiveVector res;
     for (PrimitiveVectorDim dim : dims) {
         VTR_ASSERT_SAFE(res.get_dim_val(dim) == 0.0f);
-        res.set_dim_val(dim, get_dim_sum(dim, region));
+        res.set_dim_val(dim, get_dim_sum(dim, region, layer));
     }
     return res;
 }
@@ -852,9 +871,9 @@ BiPartitioningPartialLegalizer::BiPartitioningPartialLegalizer(
     // between iterations of the partial legalizer.
     capacity_prefix_sum_ = PerPrimitiveDimPrefixSum2D(
         *density_manager,
-        [&](PrimitiveVectorDim dim, size_t x, size_t y) {
+        [&](PrimitiveVectorDim dim, size_t layer, size_t x, size_t y) {
             // Get the bin at this grid location.
-            FlatPlacementBinId bin_id = density_manager_->get_bin(x, y, 0);
+            FlatPlacementBinId bin_id = density_manager_->get_bin(x, y, layer);
             // Get the capacity of the bin for this dim.
             float cap = density_manager_->get_bin_capacity(bin_id).get_dim_val(dim);
             VTR_ASSERT_SAFE(cap >= 0.0f);
@@ -1139,8 +1158,8 @@ std::vector<SpreadingWindow> BiPartitioningPartialLegalizer::get_min_windows_aro
     // modified, so it is recomputed here.
     PerPrimitiveDimPrefixSum2D utilization_prefix_sum(
         *density_manager_,
-        [&](PrimitiveVectorDim dim, size_t x, size_t y) {
-            FlatPlacementBinId bin_id = density_manager_->get_bin(x, y, 0);
+        [&](PrimitiveVectorDim dim, size_t layer, size_t x, size_t y) {
+            FlatPlacementBinId bin_id = density_manager_->get_bin(x, y, layer);
             // This is computed the same way as the capacity prefix sum above.
             const vtr::Rect<double>& bin_region = density_manager_->flat_placement_bins().bin_region(bin_id);
             float bin_area = bin_region.width() * bin_region.height();
