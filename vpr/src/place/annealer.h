@@ -261,7 +261,8 @@ class PlacementAnnealer {
      */
     t_swap_result try_swap_(MoveGenerator& move_generator,
                             const t_place_algorithm& place_algorithm,
-                            bool manual_move_enabled);
+                            bool manual_move_enabled,
+                            bool always_reject = false);
 
     /**
      * @brief Determines whether a move should be accepted or not.

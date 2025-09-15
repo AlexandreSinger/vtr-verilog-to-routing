@@ -311,13 +311,14 @@ float PlacementAnnealer::estimate_starting_temperature_() {
 }
 
 float PlacementAnnealer::estimate_equilibrium_temp_() {
-    const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
+    // const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
 
     // Determines the block swap loop count.
     // TODO: Revisit this. We may be able to get away with doing fewer trial
     //       swaps. That or we may be able to get a more accurate initial
     //       temperature by doing more moves.
-    int move_lim = std::min(annealing_state_.move_lim_max, (int)cluster_ctx.clb_nlist.blocks().size());
+    // int move_lim = std::min(annealing_state_.move_lim_max, (int)cluster_ctx.clb_nlist.blocks().size());
+    int move_lim = annealing_state_.move_lim;
 
     // Perform N trial swaps and collect the change in cost for each of these
     // swaps. Accepted swaps are swaps which resulted in a negative change in
@@ -330,19 +331,14 @@ float PlacementAnnealer::estimate_equilibrium_temp_() {
     for (int i = 0; i < move_lim; i++) {
         t_swap_result swap_result = try_swap_(*move_generator_1_,
                                               placer_opts_.place_algorithm,
-                                              false /*manual_move_enabled*/);
+                                              false /*manual_move_enabled*/,
+                                              true /*always_reject*/);
 
-        if (swap_result.move_result == e_move_result::ACCEPTED) {
-            accepted_swaps.push_back(swap_result.delta_c);
-            // TODO: Look into not actually accepting these.
-            swap_stats_.num_swap_accepted++;
-        } else if (swap_result.move_result == e_move_result::ABORTED) {
-            // Note: We do not keep track of the change in cost due to aborted
-            //       swaps. These are not interesting for this approach.
-            swap_stats_.num_swap_aborted++;
-        } else {
-            rejected_swaps.push_back(swap_result.delta_c);
-            swap_stats_.num_swap_rejected++;
+        if (swap_result.move_result != e_move_result::ABORTED) {
+            if (swap_result.delta_c <= 0.0)
+                accepted_swaps.push_back(swap_result.delta_c);
+            else
+                rejected_swaps.push_back(swap_result.delta_c);
         }
     }
 
@@ -486,7 +482,8 @@ float PlacementAnnealer::estimate_starting_temp_using_cost_variance_() {
 
 t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
                                            const t_place_algorithm& place_algorithm,
-                                           bool manual_move_enabled) {
+                                           bool manual_move_enabled,
+                                           bool always_reject) {
     /* Picks some block and moves it to another spot.  If this spot is
      * occupied, switch the blocks.  Assess the change in cost function.
      * rlim is the range limiter.
@@ -669,6 +666,9 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
         }
 #endif //NO_GRAPHICS
 
+        if (always_reject)
+            move_outcome = e_move_result::REJECTED;
+
         if (move_outcome == e_move_result::ACCEPTED) {
             costs_.cost += delta_c;
             costs_.bb_cost += bb_delta_c;
@@ -771,7 +771,7 @@ t_swap_result PlacementAnnealer::try_swap_(MoveGenerator& move_generator,
     // move generator, so we should not calculate the reward and update
     // the move generators status since this outcome is not a direct
     // consequence of the move generator
-    if (!router_block_move) {
+    if (!router_block_move && !always_reject) {
         move_generator.calculate_reward_and_process_outcome(move_outcome_stats, delta_c, REWARD_BB_TIMING_RELATIVE_WEIGHT);
     }
 
