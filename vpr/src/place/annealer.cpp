@@ -311,14 +311,13 @@ float PlacementAnnealer::estimate_starting_temperature_() {
 }
 
 float PlacementAnnealer::estimate_equilibrium_temp_() {
-    // const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
+    const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
 
     // Determines the block swap loop count.
     // TODO: Revisit this. We may be able to get away with doing fewer trial
     //       swaps. That or we may be able to get a more accurate initial
     //       temperature by doing more moves.
-    // int move_lim = std::min(annealing_state_.move_lim_max, (int)cluster_ctx.clb_nlist.blocks().size());
-    int move_lim = annealing_state_.move_lim;
+    int move_lim = std::min(annealing_state_.move_lim_max, (int)cluster_ctx.clb_nlist.blocks().size());
 
     // Perform N trial swaps and collect the change in cost for each of these
     // swaps. Accepted swaps are swaps which resulted in a negative change in
