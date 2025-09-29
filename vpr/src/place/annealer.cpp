@@ -409,7 +409,8 @@ float PlacementAnnealer::estimate_equilibrium_temp_() {
             double acceptance_prob = std::exp((-1.0 * rejected_cost) / trial_temp);
             expected_total_post_rejected_cost += rejected_cost * acceptance_prob;
         }
-        double residual = expected_total_post_rejected_cost + total_accepted_cost;
+        constexpr double exploration_rate = 1.2;
+        double residual = expected_total_post_rejected_cost + (exploration_rate * total_accepted_cost);
 
         if (residual < 0) {
             // Since the function is monotonically increasing, if the residual
