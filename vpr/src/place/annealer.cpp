@@ -360,6 +360,9 @@ float PlacementAnnealer::estimate_equilibrium_temp_() {
                                           std::abs(rejected_cost));
     }
 
+    constexpr double exploration_rate = 1.4;
+    double target_change_in_cost = ((double)move_lim / (double)annealing_state_.move_lim_max) * costs_.cost * (exploration_rate - 1.0);
+
     // Perform a binary search to try and find the equilibrium temperature for
     // this placement. This is the temperature that we expect would lead to no
     // overall change in temperature. We do this by computing the expected
@@ -409,8 +412,7 @@ float PlacementAnnealer::estimate_equilibrium_temp_() {
             double acceptance_prob = std::exp((-1.0 * rejected_cost) / trial_temp);
             expected_total_post_rejected_cost += rejected_cost * acceptance_prob;
         }
-        constexpr double exploration_rate = 1.2;
-        double residual = expected_total_post_rejected_cost + (exploration_rate * total_accepted_cost);
+        double residual = expected_total_post_rejected_cost + total_accepted_cost - target_change_in_cost;
 
         if (residual < 0) {
             // Since the function is monotonically increasing, if the residual
