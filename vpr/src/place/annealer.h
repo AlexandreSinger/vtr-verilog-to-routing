@@ -281,6 +281,8 @@ class PlacementAnnealer {
     ///        Used for estimating the starting temperature.
     float estimate_equilibrium_temp_();
 
+    float estimate_equilibrium_temp_with_thermostat_();
+
     /// @brief Estimate the starting temperature using the cost variance that
     ///        results from a set of trial swaps.
     float estimate_starting_temp_using_cost_variance_();

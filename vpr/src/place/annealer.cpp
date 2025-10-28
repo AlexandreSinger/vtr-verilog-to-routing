@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 
 #include "globals.h"
 #include "place_macro.h"
@@ -303,7 +304,7 @@ float PlacementAnnealer::estimate_starting_temperature_() {
         case e_anneal_init_t_estimator::COST_VARIANCE:
             return estimate_starting_temp_using_cost_variance_();
         case e_anneal_init_t_estimator::EQUILIBRIUM:
-            return estimate_equilibrium_temp_();
+            return estimate_equilibrium_temp_with_thermostat_();
         default:
             VPR_FATAL_ERROR(VPR_ERROR_PLACE,
                             "Unrecognized initial temperature estimator type");
@@ -431,6 +432,62 @@ float PlacementAnnealer::estimate_equilibrium_temp_() {
     // however, we know that the answer should be somewhere between lower and upper
     // bound. Therefore, return the average of the two.
     return (lower_bound_temp + upper_bound_temp) / 2.0;
+}
+
+float PlacementAnnealer::estimate_equilibrium_temp_with_thermostat_() {
+    const ClusteringContext& cluster_ctx = g_vpr_ctx.clustering();
+
+    // Determines the block swap loop count.
+    // TODO: Revisit this. We may be able to get away with doing fewer trial
+    //       swaps. That or we may be able to get a more accurate initial
+    //       temperature by doing more moves.
+    int move_lim = std::min(annealing_state_.move_lim_max, (int)cluster_ctx.clb_nlist.blocks().size());
+
+    unsigned num_trials = std::ceil(move_lim / 10.0);
+    // unsigned num_trials = move_lim;
+    // unsigned num_trials = 100;
+
+    unsigned window_size = annealing_state_.move_lim_max;
+    // unsigned window_size = num_trials;
+
+    std::vector<double> ring_buffer(window_size, 0.0);
+
+    unsigned trial_number = 0;
+
+    double t = estimate_equilibrium_temp_();
+
+    double max_abs_delta_c = 0;
+    for (size_t iter = 0; iter < 100; iter++) {
+        annealing_state_.t = t;
+
+        for (unsigned i = 0; i < num_trials; i++) {
+            t_swap_result swap_result = try_swap_(*move_generator_1_,
+                                                  placer_opts_.place_algorithm,
+                                                  false /*manual_move_enabled*/);
+
+            if (swap_result.move_result == e_move_result::ACCEPTED) {
+                swap_stats_.num_swap_accepted++;
+                ring_buffer[trial_number % window_size] = swap_result.delta_c;
+                max_abs_delta_c = std::max(max_abs_delta_c, std::abs(swap_result.delta_c));
+            } else if (swap_result.move_result == e_move_result::ABORTED) {
+                swap_stats_.num_swap_aborted++;
+            } else {
+                swap_stats_.num_swap_rejected++;
+            }
+            trial_number++;
+        }
+
+        // Check if we should update the temperature.
+        double total_delta_c_in_window = std::accumulate(ring_buffer.begin(), ring_buffer.end(), 0.0);
+        if (std::abs(total_delta_c_in_window) < max_abs_delta_c)
+            break;
+        if (total_delta_c_in_window < 0) {
+            t *= 1.1;
+        } else {
+            t /= 1.1;
+        }
+    }
+    return t;
 }
 
 float PlacementAnnealer::estimate_starting_temp_using_cost_variance_() {
