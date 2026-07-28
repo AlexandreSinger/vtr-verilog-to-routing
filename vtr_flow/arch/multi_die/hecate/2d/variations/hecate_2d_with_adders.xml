@@ -573,16 +573,55 @@
                   <output name="out_routing" num_pins="1"/>
                   <output name="cout" num_pins="1"/>
                   <clock name="clk" num_pins="1"/>
-                  <pb_type name="lut4" blif_model=".names" num_pb="2" class="lut">
-                    <input name="in" num_pins="4" port_class="lut_in"/>
-                    <output name="out" num_pins="1" port_class="lut_out"/>
-                    <!-- We define the LUT delays on the LUT pins instead of through the LUT -->
-                    <delay_matrix type="max" in_port="lut4.in" out_port="lut4.out">
-                      0
-                      0
-                      0
-                      0
-                    </delay_matrix>
+                  <!-- We create a wrapper here since in_C needs to connect to both LUTs, but it is fed from a mux. -->
+                  <pb_type name="lut4_wrapper" num_pb="1">
+                    <input name="in_A" num_pins="1"/>
+                    <input name="in_B" num_pins="1"/>
+                    <input name="in_C" num_pins="1"/>
+                    <input name="in_D" num_pins="1"/>
+                    <output name="out_a" num_pins="1"/>
+                    <output name="out_b" num_pins="1"/>
+                    <pb_type name="lut4" blif_model=".names" num_pb="2" class="lut">
+                      <input name="in" num_pins="4" port_class="lut_in"/>
+                      <output name="out" num_pins="1" port_class="lut_out"/>
+                      <!-- We define the LUT delays on the LUT pins instead of through the LUT -->
+                      <delay_matrix type="max" in_port="lut4.in" out_port="lut4.out">
+                        0
+                        0
+                        0
+                        0
+                      </delay_matrix>
+                    </pb_type>
+                    <interconnect>
+                      <!-- CAUTION: THESE DELAYS ARE JUST A SCALED VERSION OF AMON'S ARCH. NEED TO BE RE-COLLECTED. -->
+                      <direct name="direct0" input="lut4_wrapper.in_A" output="lut4[0:0].in[0:0]">
+                        <delay_constant max="88.25e-12" in_port="lut4_wrapper.in_A" out_port="lut4[0:0].in[0:0]"/>
+                      </direct>
+                      <direct name="direct1" input="lut4_wrapper.in_B" output="lut4[0:0].in[1:1]">
+                        <delay_constant max="88.25e-12" in_port="lut4_wrapper.in_B" out_port="lut4[0:0].in[1:1]"/>
+                      </direct>
+                      <direct name="direct2" input="lut4_wrapper.in_C" output="lut4[0:0].in[2:2]">
+                        <delay_constant max="88.25e-12" in_port="lut4_wrapper.in_C" out_port="lut4[0:0].in[2:2]"/>
+                      </direct>
+                      <direct name="direct3" input="lut4_wrapper.in_D" output="lut4[0:0].in[3:3]">
+                        <delay_constant max="88.25e-12" in_port="lut4_wrapper.in_D" out_port="lut4[0:0].in[3:3]"/>
+                      </direct>
+                      <direct name="direct4" input="lut4_wrapper.in_A" output="lut4[1:1].in[0:0]">
+                        <delay_constant max="88.25e-12" in_port="lut4_wrapper.in_A" out_port="lut4[1:1].in[0:0]"/>
+                      </direct>
+                      <direct name="direct6" input="lut4_wrapper.in_B" output="lut4[1:1].in[1:1]">
+                        <delay_constant max="88.25e-12" in_port="lut4_wrapper.in_B" out_port="lut4[1:1].in[1:1]"/>
+                      </direct>
+                      <direct name="direct7" input="lut4_wrapper.in_C" output="lut4[1:1].in[2:2]">
+                        <delay_constant max="88.25e-12" in_port="lut4_wrapper.in_C" out_port="lut4[1:1].in[2:2]"/>
+                      </direct>
+                      <direct name="direct8" input="lut4_wrapper.in_D" output="lut4[1:1].in[3:3]">
+                        <delay_constant max="88.25e-12" in_port="lut4_wrapper.in_D" out_port="lut4[1:1].in[3:3]"/>
+                      </direct>
+
+                      <direct name="out_a" input="lut4[0:0].out" output="lut4_wrapper.out_a"/>
+                      <direct name="out_b" input="lut4[1:1].out" output="lut4_wrapper.out_b"/>
+                    </interconnect>
                   </pb_type>
                   <pb_type name="adder" blif_model=".subckt adder" num_pb="1">
                     <input name="a" num_pins="1"/>
@@ -608,45 +647,35 @@
                   <interconnect>
                     <!--Clock -->
                     <direct name="direct5" input="arithmetic.clk" output="ff.clk"/>
-                    <!-- CAUTION: THESE DELAYS ARE JUST A SCALED VERSION OF AMON'S ARCH. NEED TO BE RE-COLLECTED. -->
-                    <!-- NOTE: I removed the registered feedback mux for the arith mode. It may not make sense to feedback the registered sumout. -->
-                    <!-- NOTE: I also removed the input selection mux. Was not clear how to connect that. -->
-                    <direct name="direct0" input="arithmetic.in_A" output="lut4[0:0].in[0:0]">
-                      <delay_constant max="88.25e-12" in_port="arithmetic.in_A" out_port="lut4[0:0].in[0:0]"/>
-                    </direct>
-                    <direct name="direct1" input="arithmetic.in_B" output="lut4[0:0].in[1:1]">
-                      <delay_constant max="88.25e-12" in_port="arithmetic.in_B" out_port="lut4[0:0].in[1:1]"/>
-                    </direct>
-                    <direct name="direct2" input="arithmetic.in_C" output="lut4[0:0].in[2:2]">
-                      <delay_constant max="88.25e-12" in_port="arithmetic.in_C" out_port="lut4[0:0].in[2:2]"/>
-                    </direct>
-                    <direct name="direct3" input="arithmetic.in_D" output="lut4[0:0].in[3:3]">
-                      <delay_constant max="88.25e-12" in_port="arithmetic.in_D" out_port="lut4[0:0].in[3:3]"/>
-                    </direct>
-                    <direct name="direct4" input="arithmetic.in_A" output="lut4[1:1].in[0:0]">
-                      <delay_constant max="88.25e-12" in_port="arithmetic.in_A" out_port="lut4[1:1].in[0:0]"/>
-                    </direct>
-                    <direct name="direct6" input="arithmetic.in_B" output="lut4[1:1].in[1:1]">
-                      <delay_constant max="88.25e-12" in_port="arithmetic.in_B" out_port="lut4[1:1].in[1:1]"/>
-                    </direct>
-                    <direct name="direct7" input="arithmetic.in_C" output="lut4[1:1].in[2:2]">
-                      <delay_constant max="88.25e-12" in_port="arithmetic.in_C" out_port="lut4[1:1].in[2:2]"/>
-                    </direct>
-                    <direct name="direct8" input="arithmetic.in_D" output="lut4[1:1].in[3:3]">
-                      <delay_constant max="88.25e-12" in_port="arithmetic.in_D" out_port="lut4[1:1].in[3:3]"/>
-                    </direct>
-                    <direct name="lut_to_add1" input="lut4[0:0].out" output="adder.a"/>
-                    <direct name="lut_to_add2" input="lut4[1:1].out" output="adder.b"/>
-                    <direct name="add_to_ff" input="adder.sumout" output="ff.D">
+                    <!-- Lut-4 wrapper connections -->
+                    <!-- NOTE: These are logical, so they have no delays. The delays can be found in the lut4_wrapper. -->
+                    <direct name="lut4_wrapper_in_A" input="arithmetic.in_A" output="lut4_wrapper.in_A"/>
+                    <direct name="lut4_wrapper_in_B" input="arithmetic.in_B" output="lut4_wrapper.in_B"/>
+                    <direct name="lut4_wrapper_in_D" input="arithmetic.in_D" output="lut4_wrapper.in_D"/>
+                    <direct name="lut4_wrapper_out_a" input="lut4_wrapper.out_a" output="adder.a"/>
+                    <direct name="lut4_wrapper_out_b" input="lut4_wrapper.out_b" output="adder.b"/>
+                    <!-- Register feedback mux -->   
+                    <mux name="mux1" input="arithmetic.in_C ff.Q" output="lut4_wrapper.in_C">
+                      <delay_constant max="1.1347e-10" in_port="arithmetic.in_C" out_port="lut4_wrapper.in_C"/>
+                      <delay_constant max="1.1347e-10" in_port="ff.Q" out_port="lut4_wrapper.in_C"/>  
+                    </mux>
+                    <!-- FF input selection mux -->
+                    <mux name="2" input="adder.sumout arithmetic.in_C" output="ff.D">
                       <!-- CAUTION: THIS DELAY IS WRONG. It is just 0.67x the delay in a 22nm arch. -->
+                      <!-- This delay also does NOT take into account the mux delay. Need COFFE to verify. -->
                       <delay_constant max="12.70e-12" in_port="adder.sumout" out_port="ff.D"/>
-                    </direct>
+                      <delay_constant max="1.74588e-11" in_port="arithmetic.in_C" out_port="ff.D"/>
+                      <!-- TODO: This pack pattern is in the Flagship architecture, but not in Aman's. -->
+                      <!-- I chose to leave this out since I am not sure if the pack-pattern would force the chains to end in FFs or not. -->
+                      <!-- <pack_pattern name="chain" in_port="adder.sumout" out_port="ff.D"/> -->
+                    </mux>
                     <direct name="carry_in" input="arithmetic.cin" output="adder.cin">
                       <pack_pattern name="chain" in_port="arithmetic.cin" out_port="adder.cin"/>
                     </direct>
                     <direct name="carry_out" input="adder.cout" output="arithmetic.cout">
                       <pack_pattern name="chain" in_port="adder.cout" out_port="arithmetic.cout"/>
                     </direct>
+                    <!-- CAUTION: THESE DELAYS ARE JUST A SCALED VERSION OF AMON'S ARCH. NEED TO BE RE-COLLECTED. -->
                     <!-- BLE output (local) -->
                     <mux name="mux3" input="ff.Q adder.sumout" output="arithmetic.out_local">
                       <delay_constant max="26.70e-12" in_port="ff.Q" out_port="arithmetic.out_local"/>
