@@ -279,6 +279,7 @@ inline NetResultFlags route_net(ConnectionRouterType& router,
 
     if (budgeting_inf.if_set()) {
         budgeting_inf.set_should_reroute(net_id, false);
+        budgeting_inf.set_should_reroute_for_skew(net_id, false);
     }
 
     // explore in order of decreasing criticality (no longer need sink_order array)
@@ -324,6 +325,23 @@ inline NetResultFlags route_net(ConnectionRouterType& router,
             flags.success = false;
             VTR_LOG("Routing failed for sink %d of net %d\n", target_pin, net_id);
             return flags;
+        }
+
+        if (budgeting_inf.if_set() && router_opts.routing_budgets_algorithm == LOW_SKEW_CLOCK && route_ctx.is_clock_net[net_id]) {
+            vtr::optional<const RouteTreeNode&> node = tree.find_by_isink(target_pin);
+            if (node) {
+                VTR_LOG("DEBUG_SKEW itry=%d net=%s pin=%d target=%.4fns min=%.4fns max=%.4fns achieved=%.4fns path:",
+                        itry, net_list.net_name(net_id).c_str(), target_pin,
+                        conn_delay_budget.target_delay * 1e9, conn_delay_budget.min_delay * 1e9,
+                        conn_delay_budget.max_delay * 1e9, node.value().Tdel * 1e9);
+                while (node) {
+                    VTR_LOG(" [%s Tdel=%.4fns]",
+                            describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, node.value().inode, is_flat).c_str(),
+                            node.value().Tdel * 1e9);
+                    node = node.value().parent();
+                }
+                VTR_LOG("\n");
+            }
         }
 
         profiling::conn_finish(size_t(route_ctx.net_rr_terminals[net_id][0]),

@@ -19,6 +19,34 @@ void SerialConnectionRouter<Heap>::timing_driven_find_single_shortest_path_from_
     const DeviceContext& device_ctx = g_vpr_ctx.device();
     RoutingContext& route_ctx = g_vpr_ctx.mutable_routing();
 
+    // When RCV is enabled, the total_cost used to order the heap
+    // (compute_node_cost_using_rcv) is NOT monotonic in path length -- it falls
+    // as expected_total_delay approaches target_delay, then rises again past
+    // it. Standard Dijkstra/A* early-exit ("first pop of sink = optimal") only
+    // holds for monotonic costs, so we can't just stop at the first sink pop:
+    // a still-unexpanded, currently higher-cost branch may go on to find a
+    // cheaper (closer-to-target) arrival. Instead, keep draining past the
+    // first sink pop; rr_node_route_inf_[sink_node] is kept up to date with
+    // the best pushed cost by update_cheapest, so continuing can only improve
+    // it, never regress it.
+    //
+    // To bound the extra work, once a node's own (raw, unbiased) delay has
+    // already reached target_delay, we stop expanding its neighbours: past
+    // that point the bias term is pinned at its floor and the overshoot
+    // penalty only grows, so every further hop down that branch can only get
+    // worse and can never produce a better arrival than what's already found.
+    //
+    // This pruning only kicks in AFTER the sink has been found at least once
+    // (found_sink true): a sink can be physically unreachable within
+    // target_delay (every valid path to it must itself cross past target),
+    // in which case pruning on delay alone would eliminate the only path and
+    // the connection would fail to route entirely. Once a valid path is
+    // already banked as a fallback, pruning can only ever improve on it, so
+    // it's safe to prune more aggressively looking for something better.
+    const bool rcv_enabled = this->rcv_path_manager.is_enabled();
+    const t_conn_delay_budget* delay_budget = cost_params.delay_budget;
+    bool found_sink = false;
+
     HeapNode cheapest;
     while (this->heap_.try_pop(cheapest)) {
         // Pop a new inode with the cheapest total cost in current route tree to be expanded on
@@ -33,17 +61,28 @@ void SerialConnectionRouter<Heap>::timing_driven_find_single_shortest_path_from_
 
         // Have we found the target?
         if (inode == sink_node) {
-            // If we're running RCV, the path will be stored in the path_data->path_rr vector
-            // This is then placed into the traceback so that the correct path is returned
-            // TODO: This can be eliminated by modifying the actual traceback function in route_timing
-            if (this->rcv_path_manager.is_enabled()) {
-                this->rcv_path_manager.insert_backwards_path_into_traceback(this->rcv_path_data[inode],
-                                                                            this->rr_node_route_inf_[inode].path_cost,
-                                                                            this->rr_node_route_inf_[inode].backward_path_cost,
-                                                                            route_ctx);
-            }
             VTR_LOGV_DEBUG(this->router_debug_, "  Found target %8d (%s)\n", inode, describe_rr_node(device_ctx.rr_graph, device_ctx.grid, device_ctx.rr_indexed_data, inode, this->is_flat_).c_str());
-            break;
+
+            found_sink = true;
+
+            if (!rcv_enabled) {
+                break;
+            }
+
+            // Keep draining: don't expand the sink itself (no outgoing edges),
+            // but a cheaper arrival may still be found via another branch.
+            continue;
+        }
+
+        // Once this node's own delay has reached the target, expanding it
+        // further can only get worse (see comment above), so there's nothing
+        // left to gain by continuing down this branch -- but only prune once
+        // a valid fallback path to the sink is already banked (see comment
+        // above), so this can never cause a previously-routable connection to
+        // fail.
+        if (rcv_enabled && found_sink && delay_budget != nullptr && this->rcv_path_data[inode] != nullptr
+            && this->rcv_path_data[inode]->backward_delay >= delay_budget->target_delay) {
+            continue;
         }
 
         // If not, keep searching
@@ -53,6 +92,16 @@ void SerialConnectionRouter<Heap>::timing_driven_find_single_shortest_path_from_
                                       cost_params,
                                       bounding_box,
                                       target_bb);
+    }
+
+    // If we're running RCV, the path will be stored in the path_data->path_rr vector
+    // This is then placed into the traceback so that the correct path is returned
+    // TODO: This can be eliminated by modifying the actual traceback function in route_timing
+    if (rcv_enabled && found_sink) {
+        this->rcv_path_manager.insert_backwards_path_into_traceback(this->rcv_path_data[sink_node],
+                                                                     this->rr_node_route_inf_[sink_node].path_cost,
+                                                                     this->rr_node_route_inf_[sink_node].backward_path_cost,
+                                                                     route_ctx);
     }
 }
 
