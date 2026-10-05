@@ -21,6 +21,7 @@ class PlaceDelayModel;
 class PreClusterDelayCalculator;
 class PreClusterTimingManager;
 struct PartialPlacement;
+struct t_physical_tile_loc;
 namespace tatum {
 class TimingGraph;
 }
@@ -147,6 +148,17 @@ class FlatPlacementArcDelayEstimator {
                                             APPinId sink_pin_id,
                                             const PartialPlacement& p_placement) const;
 
+    /**
+     * @brief Get the routing delay between the given driver and sink tiles
+     *        when the place delay model has no entry for them.
+     *
+     * The delay model is queried for the same distance from a reference
+     * location near the center of the device. If that also has no entry, a
+     * distance-based estimate using delay_per_tile_ is used.
+     */
+    float get_reference_routing_delay_(const t_physical_tile_loc& driver_loc,
+                                       const t_physical_tile_loc& sink_loc) const;
+
     /// @brief The AP netlist that placements are over.
     const APNetlist& ap_netlist_;
 
@@ -157,8 +169,8 @@ class FlatPlacementArcDelayEstimator {
     const DeviceGrid& device_grid_;
 
     /// @brief A representative routing delay per tile of distance. Used as a
-    ///        fallback when the place delay model has no entry for a pair
-    ///        of tiles.
+    ///        last-resort fallback when the place delay model has no entry
+    ///        for a pair of tiles, even from the reference location.
     float delay_per_tile_;
 
     /// @brief The intra-cluster delay between each AP pin and the boundary of

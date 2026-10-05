@@ -125,6 +125,39 @@ FlatPlacementArcDelayEstimator::FlatPlacementArcDelayEstimator(const APNetlist& 
     }
 }
 
+float FlatPlacementArcDelayEstimator::get_reference_routing_delay_(const t_physical_tile_loc& driver_loc,
+                                                                    const t_physical_tile_loc& sink_loc) const {
+    int dx = std::abs(driver_loc.x - sink_loc.x);
+    int dy = std::abs(driver_loc.y - sink_loc.y);
+
+    // Query the delay model for the same distance from the center of the
+    // device. Go in whichever direction stays within the device, clamping to
+    // the edge of the device if neither direction fits.
+    int width = static_cast<int>(device_grid_.width());
+    int height = static_cast<int>(device_grid_.height());
+    int ref_x = width / 2;
+    int ref_y = height / 2;
+    auto offset_within = [](int ref, int delta, int size) {
+        if (ref + delta < size)
+            return ref + delta;
+        if (ref - delta >= 0)
+            return ref - delta;
+        return std::clamp(ref + delta, 0, size - 1);
+    };
+    t_physical_tile_loc ref_driver_loc(ref_x, ref_y, driver_loc.layer_num);
+    t_physical_tile_loc ref_sink_loc(offset_within(ref_x, dx, width),
+                                     offset_within(ref_y, dy, height),
+                                     sink_loc.layer_num);
+    float ref_delay = place_delay_model_.delay(ref_driver_loc, 0 /*from_pin*/, ref_sink_loc, 0 /*to_pin*/);
+    if (ref_delay < ROUTER_LOOKAHEAD_NO_PATH_SENTINEL)
+        return ref_delay;
+
+    // If the reference location also has no entry, fall back on a simple
+    // distance-based estimate. This is pessimistic for long distances, since
+    // it does not account for long wires.
+    return (dx + dy) * delay_per_tile_;
+}
+
 float FlatPlacementArcDelayEstimator::estimate_inter_cluster_arc_delay_(APPinId driver_pin_id,
                                                                         APPinId sink_pin_id,
                                                                         const PartialPlacement& p_placement) const {
@@ -146,13 +179,13 @@ float FlatPlacementArcDelayEstimator::estimate_inter_cluster_arc_delay_(APPinId 
                                                    0 /*to_pin*/);
 
     // The delay model returns ROUTER_LOOKAHEAD_NO_PATH_SENTINEL when it has
-    // no entry for this driver/sink pair (a gap in the model). Use a
-    // distance-based estimate so the arc is not treated as free.
-    if (routing_delay >= ROUTER_LOOKAHEAD_NO_PATH_SENTINEL) {
-        int manhattan_dist = std::abs(driver_loc.x - sink_loc.x)
-                             + std::abs(driver_loc.y - sink_loc.y);
-        routing_delay = manhattan_dist * delay_per_tile_;
-    }
+    // no entry for this driver/sink pair (a gap in the model). For example,
+    // the default delay model looks up the delay by the type of the driver's
+    // tile, and the table for IO tiles may be missing some distances. Use the
+    // delay of the same distance from a reference location instead, so the
+    // arc is not treated as free.
+    if (routing_delay >= ROUTER_LOOKAHEAD_NO_PATH_SENTINEL)
+        routing_delay = get_reference_routing_delay_(driver_loc, sink_loc);
 
     return pin_cluster_boundary_delay_[driver_pin_id]
            + routing_delay
@@ -281,7 +314,22 @@ void FlatPlacementArcDelayEstimator::write_arc_info(const std::string& filename,
 
     std::ofstream os(filename);
     os << "# edge: <timing edge id> type: <how the delay is computed> fanout: <net fanout>"
-       << " src_pin: <source pb_graph pin> sink_pin: <sink pb_graph pin>\n";
+       << " src_pin: <source pb_graph pin> sink_pin: <sink pb_graph pin>"
+       << " src_loc: <x,y,layer of source block> sink_loc: <x,y,layer of sink block>\n";
+
+    // Print the flat placement location of the AP block containing the given
+    // atom pin, or "-" if the pin is not in the AP netlist.
+    auto print_pin_loc = [&](AtomPinId atom_pin) {
+        APPinId ap_pin_id = atom_to_ap_pin[atom_pin];
+        if (!ap_pin_id.is_valid()) {
+            os << "-";
+            return;
+        }
+        APBlockId blk_id = ap_netlist_.pin_block(ap_pin_id);
+        os << p_placement.block_x_locs[blk_id] << ","
+           << p_placement.block_y_locs[blk_id] << ","
+           << p_placement.block_layer_nums[blk_id];
+    };
     for (tatum::EdgeId edge_id : timing_graph.edges()) {
         if (timing_graph.edge_type(edge_id) != tatum::EdgeType::INTERCONNECT)
             continue;
@@ -306,7 +354,11 @@ void FlatPlacementArcDelayEstimator::write_arc_info(const std::string& filename,
            << " fanout: " << atom_netlist.net_sinks(atom_netlist.pin_net(src_pin)).size()
            << " src_pin: " << delay_calc.find_pb_graph_pin(src_pin)->to_string(false)
            << " sink_pin: " << delay_calc.find_pb_graph_pin(sink_pin)->to_string(false)
-           << "\n";
+           << " src_loc: ";
+        print_pin_loc(src_pin);
+        os << " sink_loc: ";
+        print_pin_loc(sink_pin);
+        os << "\n";
     }
 }
 
