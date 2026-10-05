@@ -10,19 +10,21 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <memory>
 #include <unordered_set>
 #include "PreClusterDelayCalculator.h"
 #include "ap_netlist.h"
 #include "ap_timing_estimation.h"
-#include "concrete_timing_info.h"
 #include "device_grid.h"
 #include "echo_files.h"
 #include "globals.h"
 #include "net_cost_handler.h"
 #include "partial_placement.h"
 #include "physical_types.h"
+#include "tatum/analyzer_factory.hpp"
+#include "tatum/analyzers/SetupTimingAnalyzer.hpp"
 #include "tatum/echo_writer.hpp"
-#include "vpr_types.h"
+#include "timing_util.h"
 #include "vtr_assert.h"
 #include "vtr_geometry.h"
 
@@ -204,30 +206,31 @@ t_ap_timing_estimate estimate_post_routing_timing(const PartialPlacement& p_plac
     // a different placement.
     arc_delay_estimator.update_arc_delays(p_placement, *delay_calc);
 
-    // Perform a full setup timing analysis using a new timing info object.
-    // A new object is used so that this estimate is independent of the state
-    // of any other timing info sharing the delay calculator (e.g. incremental
+    // Perform a full setup timing analysis using a new timing analyzer.
+    // A new analyzer is used so that this estimate is independent of the state
+    // of any other analyzer sharing the delay calculator (e.g. incremental
     // timing updates).
-    std::unique_ptr<SetupTimingInfo> timing_info = make_setup_timing_info(delay_calc,
-                                                                          e_timing_update_type::FULL);
-    // Any unconstrained timing nodes would have already been warned about by
-    // the pre-cluster timing manager.
-    timing_info->set_warn_unconstrained(false);
-    timing_info->update();
+    // NOTE: A Tatum analyzer is used directly (instead of a SetupTimingInfo)
+    //       since the slacks and criticalities of every pin are not needed.
+    const TimingContext& timing_ctx = g_vpr_ctx.timing();
+    using SetupAnalyzerFactory = tatum::AnalyzerFactory<tatum::SetupAnalysis, tatum::ParallelWalker>;
+    std::shared_ptr<tatum::SetupTimingAnalyzer> analyzer = SetupAnalyzerFactory::make(*timing_ctx.graph,
+                                                                                      *timing_ctx.constraints,
+                                                                                      *delay_calc);
+    analyzer->update_timing();
 
     // Write the estimated timing graph to an echo file if requested.
     if (isEchoFileEnabled(E_ECHO_AP_POST_ROUTING_TIMING_ESTIMATE_GRAPH)) {
-        const TimingContext& timing_ctx = g_vpr_ctx.timing();
         tatum::write_echo(getEchoFileName(E_ECHO_AP_POST_ROUTING_TIMING_ESTIMATE_GRAPH),
                           *timing_ctx.graph,
                           *timing_ctx.constraints,
                           *delay_calc,
-                          timing_info->analyzer());
+                          analyzer);
     }
 
     t_ap_timing_estimate timing_estimate;
-    timing_estimate.cpd = timing_info->least_slack_critical_path().delay();
-    timing_estimate.stns = timing_info->setup_total_negative_slack();
-    timing_estimate.swns = timing_info->setup_worst_negative_slack();
+    timing_estimate.cpd = find_least_slack_critical_path_delay(*timing_ctx.constraints, *analyzer).delay();
+    timing_estimate.stns = find_setup_total_negative_slack(*analyzer);
+    timing_estimate.swns = find_setup_worst_negative_slack(*analyzer);
     return timing_estimate;
 }

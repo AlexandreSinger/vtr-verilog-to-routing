@@ -52,8 +52,8 @@ double estimate_post_routing_wire_usage(const PartialPlacement& p_placement,
  * @brief Estimate the post-routing setup timing of the given flat placement.
  *
  * The delays of all timing arcs are re-estimated from the flat placement and
- * stored in the given delay calculator, then a setup timing analysis is
- * performed on a new timing info object which uses that delay calculator.
+ * stored in the given delay calculator, then a full setup timing analysis is
+ * performed with a new timing analyzer which uses that delay calculator.
  *
  * If the timing graph echo file for this estimate is enabled, the timing graph
  * (including the estimated delay of every edge) is written to it. This can be
