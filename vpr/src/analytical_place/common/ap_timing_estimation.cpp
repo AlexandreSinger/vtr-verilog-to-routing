@@ -108,6 +108,10 @@ FlatPlacementArcDelayEstimator::FlatPlacementArcDelayEstimator(const APNetlist& 
 
         // For sink pins, compute the intra-cluster delay from the driver of
         // the net, in case the driver and sink end up in the same cluster.
+        // The driver and sink may be packed into different primitives than
+        // the ones they are expected to be implemented by (for example, a LUT
+        // driving an adder may be packed into the LUT that directly drives the
+        // adder), so use the minimum path delay between equivalent pins.
         if (ap_netlist_.pin_type(pin_id) != PinType::SINK)
             continue;
         APPinId driver_pin_id = ap_netlist_.net_driver(ap_netlist_.pin_net(pin_id));
@@ -116,7 +120,7 @@ FlatPlacementArcDelayEstimator::FlatPlacementArcDelayEstimator(const APNetlist& 
         const t_pb_graph_pin* driver_gpin = delay_calc.find_pb_graph_pin(ap_netlist_.pin_atom_pin(driver_pin_id));
         auto [it, inserted] = path_cache.try_emplace({driver_gpin, gpin}, -1.0f);
         if (inserted)
-            it->second = calc_pb_graph_path_delay(driver_gpin, gpin);
+            it->second = calc_min_equivalent_pin_path_delay(driver_gpin, gpin);
         sink_pin_intra_cluster_delay_[pin_id] = it->second;
     }
 }

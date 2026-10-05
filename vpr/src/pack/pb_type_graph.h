@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "physical_types.h"
 
 struct t_pb_graph_edge_comparator {
@@ -73,11 +75,47 @@ float calc_pb_graph_delay_to_root_pin(const t_pb_graph_pin* src);
 float calc_pb_graph_delay_from_root_pin(const t_pb_graph_pin* sink);
 
 /**
+ * @brief Find every pin in the same cluster which is equivalent to the given
+ *        primitive pin.
+ *
+ * Equivalent pins are the pins with the same model port and pin number on
+ * every primitive in the same cluster (root pb_graph node), in any mode, which
+ * implements the same model as the given pin's primitive. These are the pins
+ * that a primitive pin could be implemented by when the specific primitive
+ * that an atom is packed into is not known.
+ *
+ * @param pin   A pin of a primitive pb_graph node.
+ *
+ * @return The equivalent pins (including the given pin).
+ */
+std::vector<const t_pb_graph_pin*> find_equivalent_pb_graph_pins(const t_pb_graph_pin* pin);
+
+/**
+ * @brief Find the minimum delay of a path from any pin equivalent to src to
+ *        any pin equivalent to sink (see find_equivalent_pb_graph_pins).
+ *
+ * This is useful to estimate the intra-cluster delay between two primitive
+ * pins when the specific primitives that will be used are not known. For
+ * example, a LUT driving an adder may be packed into the LUT that directly
+ * drives the adder, rather than a LUT which must use the cluster's local
+ * interconnect.
+ *
+ * NOTE: See the explanation above for why we use BFS here.
+ *
+ * @param src   Source pb_graph pin whose equivalent pins are searched from.
+ * @param sink  Sink pb_graph pin whose equivalent pins are searched for.
+ *
+ * @return The minimum accumulated delay_max along a path from an equivalent
+ *         source pin to an equivalent sink pin, or -1.0f if no path exists.
+ */
+float calc_min_equivalent_pin_path_delay(const t_pb_graph_pin* src, const t_pb_graph_pin* sink);
+
+/**
  * @brief Find the minimum delay from any pin equivalent to src to the nearest
  *        reachable root-block (cluster-level) pin.
  *
- * Equivalent pins are the pins with the same port and pin number on every
- * instance of src's pb_type within the same cluster. This is useful when the
+ * See find_equivalent_pb_graph_pins for the definition of equivalent
+ * pins. This is useful when the
  * specific instance of the primitive is not known, but the connection must
  * leave the cluster through a specific instance. For example, a carry chain
  * may only leave a cluster through the cout pin of the last adder in the
@@ -96,8 +134,8 @@ float calc_min_equivalent_pin_delay_to_root_pin(const t_pb_graph_pin* src);
  * @brief Find the minimum delay from the nearest reachable root-block
  *        (cluster-level) pin to any pin equivalent to sink.
  *
- * Equivalent pins are the pins with the same port and pin number on every
- * instance of sink's pb_type within the same cluster. This is useful when the
+ * See find_equivalent_pb_graph_pins for the definition of equivalent
+ * pins. This is useful when the
  * specific instance of the primitive is not known, but the connection must
  * enter the cluster through a specific instance. For example, a carry chain
  * may only enter a cluster through the cin pin of the first adder in the

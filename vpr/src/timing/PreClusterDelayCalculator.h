@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cmath>
+#include <unordered_map>
+#include <utility>
 
 #include "netlist_fwd.h"
 #include "vtr_assert.h"
@@ -18,6 +20,7 @@
 #include "pb_type_graph.h"
 #include "physical_types.h"
 #include "prepack.h"
+#include "vtr_hash.h"
 #include "vtr_vector.h"
 
 class LogicalModels;
@@ -63,8 +66,10 @@ class PreClusterDelayCalculator : public tatum::DelayCalculator {
         , models_(models)
         , timing_arc_delays_(netlist.pins().size(), initial_arc_delay)
         , prepacker_(prepacker)
-        , intra_molecule_delay_cache_(timing_graph.edges().size(), tatum::Time(NAN))
-        , chain_delay_cache_(timing_graph.edges().size(), tatum::Time(NAN)) {}
+        , intra_molecule_delays_(timing_graph.edges().size(), tatum::Time(NAN))
+        , chain_delays_(timing_graph.edges().size(), tatum::Time(NAN)) {
+        precompute_internal_arc_delays(timing_graph);
+    }
 
     /**
      * @brief Set the delay of a timing arc, identified by the sink pin that
@@ -170,27 +175,19 @@ class PreClusterDelayCalculator : public tatum::DelayCalculator {
 
             AtomPinId atom_src_pin = netlist_lookup_.tnode_atom_pin(src_node);
             switch (get_arc_type(atom_src_pin, atom_sink_pin)) {
-                case e_pre_cluster_arc_type::INTRA_MOLECULE: {
+                case e_pre_cluster_arc_type::INTRA_MOLECULE:
                     // The source and sink atoms will be packed into the same
                     // cluster, so the inter-cluster delay is a significant
                     // overestimate. Use a more accurate intra-cluster delay
                     // derived from the pb_graph hierarchy instead.
-                    tatum::Time cached = intra_molecule_delay_cache_[edge_id];
-                    if (!std::isnan(cached.value())) return cached;
-                    tatum::Time delay = calc_intra_molecule_delay(atom_src_pin, atom_sink_pin);
-                    intra_molecule_delay_cache_[edge_id] = delay;
-                    return delay;
-                }
-                case e_pre_cluster_arc_type::INTER_MOLECULE_CHAIN: {
+                    VTR_ASSERT_SAFE(!std::isnan(intra_molecule_delays_[edge_id].value()));
+                    return intra_molecule_delays_[edge_id];
+                case e_pre_cluster_arc_type::INTER_MOLECULE_CHAIN:
                     // The connection uses dedicated chain wiring between
                     // clusters rather than general-purpose inter-cluster
                     // routing.
-                    tatum::Time cached = chain_delay_cache_[edge_id];
-                    if (!std::isnan(cached.value())) return cached;
-                    tatum::Time delay = calc_inter_molecule_chain_delay(atom_src_pin, atom_sink_pin);
-                    chain_delay_cache_[edge_id] = delay;
-                    return delay;
-                }
+                    VTR_ASSERT_SAFE(!std::isnan(chain_delays_[edge_id].value()));
+                    return chain_delays_[edge_id];
                 case e_pre_cluster_arc_type::EXTERNAL:
                 default:
                     // External net delay
@@ -286,21 +283,66 @@ class PreClusterDelayCalculator : public tatum::DelayCalculator {
     }
 
     /**
-     * @brief Calculates the delay between two atom pins that belong to the
-     *        same molecule (and will therefore be packed into the same
+     * @brief Pre-compute the delays of all interconnect arcs which are handled
+     *        internally by this calculator (intra-molecule and chain arcs).
+     *
+     * These delays only depend on the pb_graph pins of the arc, so they are
+     * computed once per distinct pair of pb_graph pins. This is done eagerly
+     * (rather than lazily in max_edge_delay) so that the delays can be shared
+     * between edges without synchronization during parallel timing analysis.
+     */
+    void precompute_internal_arc_delays(const tatum::TimingGraph& timing_graph) {
+        using t_gpin_pair = std::pair<const t_pb_graph_pin*, const t_pb_graph_pin*>;
+        std::unordered_map<t_gpin_pair, tatum::Time, vtr::hash_pair> intra_molecule_cache;
+        std::unordered_map<t_gpin_pair, tatum::Time, vtr::hash_pair> chain_cache;
+
+        for (tatum::EdgeId edge_id : timing_graph.edges()) {
+            if (timing_graph.edge_type(edge_id) != tatum::EdgeType::INTERCONNECT)
+                continue;
+            AtomPinId src_pin = netlist_lookup_.tnode_atom_pin(timing_graph.edge_src_node(edge_id));
+            AtomPinId sink_pin = netlist_lookup_.tnode_atom_pin(timing_graph.edge_sink_node(edge_id));
+            if (!sink_pin.is_valid())
+                continue;
+
+            e_pre_cluster_arc_type arc_type = get_arc_type(src_pin, sink_pin);
+            if (arc_type == e_pre_cluster_arc_type::EXTERNAL)
+                continue;
+
+            t_gpin_pair gpins = {find_pb_graph_pin(src_pin), find_pb_graph_pin(sink_pin)};
+            if (arc_type == e_pre_cluster_arc_type::INTRA_MOLECULE) {
+                auto [it, inserted] = intra_molecule_cache.try_emplace(gpins);
+                if (inserted)
+                    it->second = calc_intra_molecule_delay(gpins.first, gpins.second);
+                intra_molecule_delays_[edge_id] = it->second;
+            } else {
+                VTR_ASSERT_SAFE(arc_type == e_pre_cluster_arc_type::INTER_MOLECULE_CHAIN);
+                auto [it, inserted] = chain_cache.try_emplace(gpins);
+                if (inserted)
+                    it->second = calc_inter_molecule_chain_delay(gpins.first, gpins.second);
+                chain_delays_[edge_id] = it->second;
+            }
+        }
+    }
+
+    /**
+     * @brief Calculates the delay between two primitive pins that belong to
+     *        the same molecule (and will therefore be packed into the same
      *        cluster), using the pb_graph path between their pb_graph pins.
      *
-     * @param src_pin   Source atom pin.
-     * @param sink_pin  Sink atom pin.
+     * The pb_graph pins of the source and sink are the pins they are expected
+     * to be implemented by, chosen independently. The molecule may be packed
+     * into a different set of primitives (for example, an adder and the
+     * flip-flop it directly drives), so the minimum path delay between any
+     * equivalent source and sink pins is used.
      *
-     * @return The intra-cluster delay between src_pin and sink_pin, or
-     *         approximately 0 if no path was found in the pb_graph.
+     * @param src_gpin  Source pb_graph pin.
+     * @param sink_gpin Sink pb_graph pin.
+     *
+     * @return The intra-cluster delay between the pins, or approximately 0 if
+     *         no path was found in the pb_graph.
      */
-    tatum::Time calc_intra_molecule_delay(AtomPinId src_pin, AtomPinId sink_pin) const {
-        const t_pb_graph_pin* src_gpin = find_pb_graph_pin(src_pin);
-        const t_pb_graph_pin* sink_gpin = find_pb_graph_pin(sink_pin);
-
-        float delay = calc_pb_graph_path_delay(src_gpin, sink_gpin);
+    static tatum::Time calc_intra_molecule_delay(const t_pb_graph_pin* src_gpin, const t_pb_graph_pin* sink_gpin) {
+        float delay = calc_min_equivalent_pin_path_delay(src_gpin, sink_gpin);
 
         // If a valid path was found through the pb_graph hierarchy, use it.
         // Otherwise we assume that it is a very low delay, close to 0.
@@ -312,19 +354,16 @@ class PreClusterDelayCalculator : public tatum::DelayCalculator {
      *        different molecules of the same chain (e.g. a long carry
      *        chain split across multiple clusters).
      *
-     * @param src_pin   Source atom pin.
-     * @param sink_pin  Sink atom pin.
+     * @param src_gpin  Source pb_graph pin.
+     * @param sink_gpin Sink pb_graph pin.
      *
-     * @return The estimated delay between src_pin and sink_pin, made up of
+     * @return The estimated delay between the pins, made up of
      *         the intra-cluster routing out to the source cluster's
      *         boundary plus the intra-cluster routing in from the sink
      *         cluster's boundary. The dedicated inter-cluster chain wiring
      *         delay is not included; see the comment below for why.
      */
-    tatum::Time calc_inter_molecule_chain_delay(AtomPinId src_pin, AtomPinId sink_pin) const {
-        const t_pb_graph_pin* src_gpin = find_pb_graph_pin(src_pin);
-        const t_pb_graph_pin* sink_gpin = find_pb_graph_pin(sink_pin);
-
+    static tatum::Time calc_inter_molecule_chain_delay(const t_pb_graph_pin* src_gpin, const t_pb_graph_pin* sink_gpin) {
         // Estimate the delay as the intra-cluster routing from the source
         // pin out to the source cluster's boundary, plus the intra-cluster
         // routing from the sink cluster's boundary in to the sink pin. The
@@ -381,11 +420,13 @@ class PreClusterDelayCalculator : public tatum::DelayCalculator {
     vtr::vector<AtomPinId, float> timing_arc_delays_;
     const Prepacker& prepacker_;
 
-    // Delay caches indexed by tatum::EdgeId, NaN-initialised. Lazily populated
-    // on the first call to max_edge_delay() for each edge and then read-only for
-    // that edge. Thread-safe under the parallel timing walker because tatum's
-    // DAG guarantee ensures each edge is visited by exactly one node (its sink),
-    // and nodes at the same level are never assigned the same incoming edge.
-    mutable vtr::vector<tatum::EdgeId, tatum::Time> intra_molecule_delay_cache_;
-    mutable vtr::vector<tatum::EdgeId, tatum::Time> chain_delay_cache_;
+    /// @brief The delays of intra-molecule interconnect arcs, indexed by
+    ///        timing edge. NaN for all other edges. Pre-computed on
+    ///        construction (see precompute_internal_arc_delays).
+    vtr::vector<tatum::EdgeId, tatum::Time> intra_molecule_delays_;
+
+    /// @brief The delays of inter-molecule chain interconnect arcs, indexed by
+    ///        timing edge. NaN for all other edges. Pre-computed on
+    ///        construction (see precompute_internal_arc_delays).
+    vtr::vector<tatum::EdgeId, tatum::Time> chain_delays_;
 };

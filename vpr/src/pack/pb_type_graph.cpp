@@ -1997,19 +1997,16 @@ float calc_pb_graph_delay_from_root_pin(const t_pb_graph_pin* sink) {
 }
 
 /**
- * @brief Find the pin of the given pb_graph node which has the same port and
- *        pin number as the given pin.
- *
- * The given node is expected to be of the same pb_type as the parent node of
- * the given pin (i.e. another instance of the same pb_type).
+ * @brief Find the pin of the given primitive pb_graph node which implements
+ *        the same model port and pin number as the given primitive pin.
  *
  * @return The equivalent pin, or nullptr if no such pin exists.
  */
-static const t_pb_graph_pin* find_equivalent_pb_graph_pin(const t_pb_graph_node* node,
-                                                          const t_pb_graph_pin* pin) {
+static const t_pb_graph_pin* find_equivalent_pin_in_primitive(const t_pb_graph_node* node,
+                                                              const t_pb_graph_pin* pin) {
     auto search_ports = [pin](t_pb_graph_pin** pins, int num_ports, const int* num_pins) -> const t_pb_graph_pin* {
         for (int iport = 0; iport < num_ports; iport++) {
-            if (num_pins[iport] == 0 || pins[iport][0].port != pin->port)
+            if (num_pins[iport] == 0 || pins[iport][0].port->model_port != pin->port->model_port)
                 continue;
             if (pin->pin_number < num_pins[iport])
                 return &pins[iport][pin->pin_number];
@@ -2024,44 +2021,30 @@ static const t_pb_graph_pin* find_equivalent_pb_graph_pin(const t_pb_graph_node*
     return search_ports(node->clock_pins, node->num_clock_ports, node->num_clock_pins);
 }
 
-/**
- * @brief Find the minimum delay between the cluster boundary and any pin
- *        equivalent to the given pin in the same cluster (root) pb_graph.
- *
- * Equivalent pins are the pins with the same port and pin number on every
- * instance of the given pin's pb_type within the root pb_graph node.
- *
- * @param pin       The pin to find the equivalent pins of.
- * @param forward   If true, search from the equivalent pins to a root-block
- *                  pin; otherwise, search from a root-block pin to the
- *                  equivalent pins.
- *
- * @return The minimum delay, or -1.0f if no equivalent pin can reach (or be
- *         reached from) a root-block pin.
- */
-static float calc_min_equivalent_pin_root_delay(const t_pb_graph_pin* pin, bool forward) {
-    if (pin == nullptr) return -1.0f;
+std::vector<const t_pb_graph_pin*> find_equivalent_pb_graph_pins(const t_pb_graph_pin* pin) {
+    std::vector<const t_pb_graph_pin*> equivalent_pins;
+    if (pin == nullptr) return equivalent_pins;
+    VTR_ASSERT_SAFE(pin->parent_node->pb_type->is_primitive());
 
     // Find the root pb_graph node (i.e. the cluster) that this pin is within.
     const t_pb_graph_node* root = pin->parent_node;
     while (!root->is_root())
         root = root->parent_pb_graph_node;
 
-    // Search every pb_graph node in the cluster for instances of the same
-    // pb_type as the pin's parent, and find the minimum delay between the
-    // cluster boundary and the equivalent pin on each instance.
-    const t_pb_type* target_pb_type = pin->parent_node->pb_type;
-    float min_delay = -1.0f;
+    // Search every primitive in the cluster (in every mode) for primitives
+    // implementing the same model as the pin's primitive.
+    LogicalModelId target_model_id = pin->parent_node->pb_type->model_id;
     std::vector<const t_pb_graph_node*> stack = {root};
     while (!stack.empty()) {
         const t_pb_graph_node* node = stack.back();
         stack.pop_back();
 
-        if (node->pb_type == target_pb_type) {
-            const t_pb_graph_pin* equivalent_pin = find_equivalent_pb_graph_pin(node, pin);
-            float delay = calc_pb_graph_delay(equivalent_pin, forward, nullptr);
-            if (delay >= 0.0f && (min_delay < 0.0f || delay < min_delay))
-                min_delay = delay;
+        if (node->pb_type->is_primitive()) {
+            if (node->pb_type->model_id != target_model_id)
+                continue;
+            const t_pb_graph_pin* equivalent_pin = find_equivalent_pin_in_primitive(node, pin);
+            if (equivalent_pin != nullptr)
+                equivalent_pins.push_back(equivalent_pin);
             continue;
         }
 
@@ -2075,6 +2058,64 @@ static float calc_min_equivalent_pin_root_delay(const t_pb_graph_pin* pin, bool 
         }
     }
 
+    return equivalent_pins;
+}
+
+/**
+ * @brief Find the minimum delay between the cluster boundary and any pin
+ *        equivalent to the given pin (see find_equivalent_pb_graph_pins).
+ *
+ * @param pin       The pin to find the equivalent pins of.
+ * @param forward   If true, search from the equivalent pins to a root-block
+ *                  pin; otherwise, search from a root-block pin to the
+ *                  equivalent pins.
+ *
+ * @return The minimum delay, or -1.0f if no equivalent pin can reach (or be
+ *         reached from) a root-block pin.
+ */
+static float calc_min_equivalent_pin_root_delay(const t_pb_graph_pin* pin, bool forward) {
+    float min_delay = -1.0f;
+    for (const t_pb_graph_pin* equivalent_pin : find_equivalent_pb_graph_pins(pin)) {
+        float delay = calc_pb_graph_delay(equivalent_pin, forward, nullptr);
+        if (delay >= 0.0f && (min_delay < 0.0f || delay < min_delay))
+            min_delay = delay;
+    }
+    return min_delay;
+}
+
+float calc_min_equivalent_pin_path_delay(const t_pb_graph_pin* src, const t_pb_graph_pin* sink) {
+    if (src == nullptr || sink == nullptr) return -1.0f;
+
+    std::vector<const t_pb_graph_pin*> equivalent_sinks = find_equivalent_pb_graph_pins(sink);
+    std::unordered_set<const t_pb_graph_pin*> sink_set(equivalent_sinks.begin(), equivalent_sinks.end());
+
+    // From each equivalent source pin, search forward through the pb_graph
+    // and record the delay to every equivalent sink pin reached. Similar to
+    // calc_pb_graph_delay, the delay of a pin is the delay along the BFS path
+    // that first reaches it.
+    float min_delay = -1.0f;
+    for (const t_pb_graph_pin* equivalent_src : find_equivalent_pb_graph_pins(src)) {
+        std::queue<std::pair<const t_pb_graph_pin*, float>> queue;
+        std::unordered_set<const t_pb_graph_pin*> visited;
+        queue.push({equivalent_src, 0.0f});
+        visited.insert(equivalent_src);
+        while (!queue.empty()) {
+            auto [cur_pin, cur_delay] = queue.front();
+            queue.pop();
+            if (sink_set.count(cur_pin) != 0) {
+                if (min_delay < 0.0f || cur_delay < min_delay)
+                    min_delay = cur_delay;
+                continue;
+            }
+            for (const t_pb_graph_edge* edge : cur_pin->output_edges) {
+                for (int ip = 0; ip < edge->num_output_pins; ++ip) {
+                    const t_pb_graph_pin* next = edge->output_pins[ip];
+                    if (visited.insert(next).second)
+                        queue.push({next, cur_delay + edge->delay_max});
+                }
+            }
+        }
+    }
     return min_delay;
 }
 
