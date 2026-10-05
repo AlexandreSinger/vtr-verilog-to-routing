@@ -72,6 +72,46 @@ float calc_pb_graph_delay_to_root_pin(const t_pb_graph_pin* src);
  */
 float calc_pb_graph_delay_from_root_pin(const t_pb_graph_pin* sink);
 
+/**
+ * @brief Find the minimum delay from any pin equivalent to src to the nearest
+ *        reachable root-block (cluster-level) pin.
+ *
+ * Equivalent pins are the pins with the same port and pin number on every
+ * instance of src's pb_type within the same cluster. This is useful when the
+ * specific instance of the primitive is not known, but the connection must
+ * leave the cluster through a specific instance. For example, a carry chain
+ * may only leave a cluster through the cout pin of the last adder in the
+ * cluster.
+ *
+ * NOTE: See the explanation above for why we use BFS here.
+ *
+ * @param src   Source pb_graph pin whose equivalent pins are searched from.
+ *
+ * @return The minimum accumulated delay_max from an equivalent pin to a
+ *         root-block pin, or -1.0f if no root-block pin is reachable.
+ */
+float calc_min_equivalent_pin_delay_to_root_pin(const t_pb_graph_pin* src);
+
+/**
+ * @brief Find the minimum delay from the nearest reachable root-block
+ *        (cluster-level) pin to any pin equivalent to sink.
+ *
+ * Equivalent pins are the pins with the same port and pin number on every
+ * instance of sink's pb_type within the same cluster. This is useful when the
+ * specific instance of the primitive is not known, but the connection must
+ * enter the cluster through a specific instance. For example, a carry chain
+ * may only enter a cluster through the cin pin of the first adder in the
+ * cluster.
+ *
+ * NOTE: See the explanation above for why we use BFS here.
+ *
+ * @param sink  Sink pb_graph pin whose equivalent pins are searched to.
+ *
+ * @return The minimum accumulated delay_max from a root-block pin to an
+ *         equivalent pin, or -1.0f if no equivalent pin is reachable.
+ */
+float calc_min_equivalent_pin_delay_from_root_pin(const t_pb_graph_pin* sink);
+
 void alloc_and_load_all_pb_graphs(bool load_power_structures, bool is_flat);
 void echo_pb_graph(char* filename);
 void free_pb_graph_edges();
