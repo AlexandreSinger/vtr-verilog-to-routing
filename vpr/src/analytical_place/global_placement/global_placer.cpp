@@ -145,17 +145,25 @@ SimPLGlobalPlacer::SimPLGlobalPlacer(e_ap_analytical_solver analytical_solver_ty
 static void print_placement_stats(const PartialPlacement& p_placement,
                                   const APNetlist& ap_netlist,
                                   FlatPlacementDensityManager& density_manager,
-                                  const PreClusterTimingManager& pre_cluster_timing_manager) {
+                                  PreClusterTimingManager& pre_cluster_timing_manager,
+                                  const FlatPlacementArcDelayEstimator* arc_delay_estimator) {
     // Print the placement HPWL
     VTR_LOG("\tPlacement objective HPWL: %f\n", p_placement.get_hpwl(ap_netlist));
     VTR_LOG("\tPlacement estimated wirelength: %g\n", estimate_post_routing_wire_usage(p_placement, ap_netlist, g_vpr_ctx.device().grid));
 
-    // Print the timing information.
+    // Print the estimated post-routing timing.
+    // NOTE: This overwrites the arc delays in the timing manager's delay
+    //       calculator. The global placer uses the same arc delay estimator,
+    //       so these are the same delays the timing manager was last updated
+    //       with (assuming it was last updated with this placement).
     if (pre_cluster_timing_manager.is_valid()) {
-        float cpd_ns = pre_cluster_timing_manager.get_timing_info().least_slack_critical_path().delay() * 1e9;
-        float stns_ns = pre_cluster_timing_manager.get_timing_info().setup_total_negative_slack() * 1e9;
-        VTR_LOG("\tPlacement estimated CPD: %f ns\n", cpd_ns);
-        VTR_LOG("\tPlacement estimated sTNS: %f ns\n", stns_ns);
+        VTR_ASSERT(arc_delay_estimator != nullptr);
+        t_ap_timing_estimate timing_estimate = estimate_post_routing_timing(p_placement,
+                                                                            *arc_delay_estimator,
+                                                                            pre_cluster_timing_manager.get_delay_calculator_ptr());
+        VTR_LOG("\tPlacement estimated CPD: %f ns\n", timing_estimate.cpd * 1e9);
+        VTR_LOG("\tPlacement estimated sTNS: %f ns\n", timing_estimate.stns * 1e9);
+        VTR_LOG("\tPlacement estimated sWNS: %f ns\n", timing_estimate.swns * 1e9);
     }
 
     // Print density information. Need to reset the density manager to ensure
@@ -268,54 +276,6 @@ static void print_SimPL_status(size_t iteration,
     fflush(stdout);
 }
 
-/**
- * @brief Helper method for updating the timing information in the pre-cluster
- *        timing manager using a flat placement as a hint for where the atoms
- *        will be placed.
- *
- *  @param pre_cluster_timing_manager
- *      Manager object which computes the slacks of timing edges.
- *  @param arc_delay_estimator
- *      Estimator used to compute the delays of timing arcs from the flat
- *      placement. May be nullptr if the timing manager is invalid.
- *  @param p_placement
- *      The flat placement used to update the timing information.
- */
-static void update_timing_info_with_gp_placement(PreClusterTimingManager& pre_cluster_timing_manager,
-                                                 const FlatPlacementArcDelayEstimator* arc_delay_estimator,
-                                                 const PartialPlacement& p_placement) {
-    // If the timing manager is invalid (i.e. timing analysis is off), do not
-    // update.
-    if (!pre_cluster_timing_manager.is_valid())
-        return;
-    VTR_ASSERT_SAFE(arc_delay_estimator != nullptr);
-
-    // Re-estimate the delays of all timing arcs using the flat placement.
-    arc_delay_estimator->update_arc_delays(p_placement,
-                                           *pre_cluster_timing_manager.get_delay_calculator_ptr());
-
-    // If the timing update type is incremental, we need to invalidate all edges which have changed.
-    // We assume here that all edge delays change in some way. We could do a more complicated
-    // check for each edge modified and check if the delay has changed; but that may likely
-    // take more time than just invalidating all of the edges.
-    // Since this loop iterates over all of the edges in the timing graph, we only do this if incremental
-    // is selected.
-    if (pre_cluster_timing_manager.get_timing_update_type() == e_timing_update_type::INCREMENTAL) {
-        for (tatum::EdgeId edge : pre_cluster_timing_manager.get_timing_info().timing_graph()->edges()) {
-            pre_cluster_timing_manager.get_timing_info_ptr()->invalidate_delay(edge);
-        }
-    }
-
-    // Update the timing info. This will run STA to recompute the slacks and
-    // the criticalities of all timing arcs.
-    pre_cluster_timing_manager.update_timing_info();
-
-    // Do not warn again about unconstrained nodes during placement.
-    // Without this line, every GP iteration would see the same warning.
-    // Ok to warn once after the first iteration.
-    pre_cluster_timing_manager.get_timing_info_ptr()->set_warn_unconstrained(false);
-}
-
 PartialPlacement SimPLGlobalPlacer::place() {
     // Create a timer to time the entire global placement time.
     vtr::ScopedStartFinishTimer global_placer_time("AP Global Placer");
@@ -365,9 +325,9 @@ PartialPlacement SimPLGlobalPlacer::place() {
 
         // Perform a timing update
         float timing_update_start_time = runtime_timer.elapsed_sec();
-        update_timing_info_with_gp_placement(pre_cluster_timing_manager_,
-                                             arc_delay_estimator_.get(),
-                                             p_placement);
+        update_timing_info_with_flat_placement(pre_cluster_timing_manager_,
+                                               arc_delay_estimator_.get(),
+                                               p_placement);
         solver_->update_net_weights(pre_cluster_timing_manager_);
         float timing_update_end_time = runtime_timer.elapsed_sec();
 
@@ -424,9 +384,9 @@ PartialPlacement SimPLGlobalPlacer::place() {
     // Update the setup slacks. This is performed down here (as well as being
     // inside the GP loop) since the best_p_placement may not be the p_placement
     // from the last iteration of GP.
-    update_timing_info_with_gp_placement(pre_cluster_timing_manager_,
-                                         arc_delay_estimator_.get(),
-                                         best_p_placement);
+    update_timing_info_with_flat_placement(pre_cluster_timing_manager_,
+                                           arc_delay_estimator_.get(),
+                                           best_p_placement);
 
     // Print statistics on the solver used.
     solver_->print_statistics();
@@ -447,7 +407,8 @@ PartialPlacement SimPLGlobalPlacer::place() {
     print_placement_stats(best_p_placement,
                           ap_netlist_,
                           *density_manager_,
-                          pre_cluster_timing_manager_);
+                          pre_cluster_timing_manager_,
+                          arc_delay_estimator_.get());
 
     // Return the placement from the final iteration.
     return best_p_placement;

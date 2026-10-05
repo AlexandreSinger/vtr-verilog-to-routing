@@ -18,6 +18,7 @@ class APNetlist;
 class DeviceGrid;
 class PlaceDelayModel;
 class PreClusterDelayCalculator;
+class PreClusterTimingManager;
 struct PartialPlacement;
 
 /**
@@ -132,3 +133,25 @@ class FlatPlacementArcDelayEstimator {
     ///        between the pins (or if the pin is not a sink pin).
     vtr::vector<APPinId, float> sink_pin_intra_cluster_delay_;
 };
+
+/**
+ * @brief Update the timing information in the pre-cluster timing manager
+ *        using a flat placement as a hint for where the atoms will be placed.
+ *
+ * The delays of all timing arcs are re-estimated from the flat placement and
+ * STA is performed to recompute the slacks and criticalities.
+ *
+ * If the timing manager is invalid (i.e. timing analysis is off), this does
+ * nothing.
+ *
+ *  @param pre_cluster_timing_manager
+ *      Manager object which computes the slacks of timing edges.
+ *  @param arc_delay_estimator
+ *      Estimator used to compute the delays of timing arcs from the flat
+ *      placement. May be nullptr if the timing manager is invalid.
+ *  @param p_placement
+ *      The flat placement used to update the timing information.
+ */
+void update_timing_info_with_flat_placement(PreClusterTimingManager& pre_cluster_timing_manager,
+                                            const FlatPlacementArcDelayEstimator* arc_delay_estimator,
+                                            const PartialPlacement& p_placement);

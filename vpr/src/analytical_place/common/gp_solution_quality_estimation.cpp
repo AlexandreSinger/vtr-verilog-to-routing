@@ -11,11 +11,18 @@
 #include <cstddef>
 #include <limits>
 #include <unordered_set>
+#include "PreClusterDelayCalculator.h"
 #include "ap_netlist.h"
+#include "ap_timing_estimation.h"
+#include "concrete_timing_info.h"
 #include "device_grid.h"
+#include "echo_files.h"
+#include "globals.h"
 #include "net_cost_handler.h"
 #include "partial_placement.h"
 #include "physical_types.h"
+#include "tatum/echo_writer.hpp"
+#include "vpr_types.h"
 #include "vtr_assert.h"
 #include "vtr_geometry.h"
 
@@ -185,4 +192,42 @@ double estimate_post_routing_wire_usage(const PartialPlacement& p_placement,
     }
 
     return wire_usage;
+}
+
+t_ap_timing_estimate estimate_post_routing_timing(const PartialPlacement& p_placement,
+                                                  const FlatPlacementArcDelayEstimator& arc_delay_estimator,
+                                                  std::shared_ptr<PreClusterDelayCalculator> delay_calc) {
+    VTR_ASSERT(delay_calc != nullptr);
+
+    // Re-estimate the delays of all timing arcs from the flat placement. All
+    // arcs are re-estimated, since the delay calculator may hold delays from
+    // a different placement.
+    arc_delay_estimator.update_arc_delays(p_placement, *delay_calc);
+
+    // Perform a full setup timing analysis using a new timing info object.
+    // A new object is used so that this estimate is independent of the state
+    // of any other timing info sharing the delay calculator (e.g. incremental
+    // timing updates).
+    std::unique_ptr<SetupTimingInfo> timing_info = make_setup_timing_info(delay_calc,
+                                                                          e_timing_update_type::FULL);
+    // Any unconstrained timing nodes would have already been warned about by
+    // the pre-cluster timing manager.
+    timing_info->set_warn_unconstrained(false);
+    timing_info->update();
+
+    // Write the estimated timing graph to an echo file if requested.
+    if (isEchoFileEnabled(E_ECHO_AP_POST_ROUTING_TIMING_ESTIMATE_GRAPH)) {
+        const TimingContext& timing_ctx = g_vpr_ctx.timing();
+        tatum::write_echo(getEchoFileName(E_ECHO_AP_POST_ROUTING_TIMING_ESTIMATE_GRAPH),
+                          *timing_ctx.graph,
+                          *timing_ctx.constraints,
+                          *delay_calc,
+                          timing_info->analyzer());
+    }
+
+    t_ap_timing_estimate timing_estimate;
+    timing_estimate.cpd = timing_info->least_slack_critical_path().delay();
+    timing_estimate.stns = timing_info->setup_total_negative_slack();
+    timing_estimate.swns = timing_info->setup_worst_negative_slack();
+    return timing_estimate;
 }
