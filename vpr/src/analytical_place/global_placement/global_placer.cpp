@@ -12,11 +12,13 @@
 #include <memory>
 #include <vector>
 #include "ap_draw_manager.h"
+#include "PreClusterDelayCalculator.h"
 #include "PreClusterTimingManager.h"
 #include "analytical_solver.h"
 #include "ap_flow_enums.h"
 #include "ap_netlist.h"
 #include "ap_netlist_fwd.h"
+#include "ap_timing_estimation.h"
 #include "atom_netlist.h"
 #include "device_grid.h"
 #include "flat_placement_bins.h"
@@ -91,6 +93,15 @@ SimPLGlobalPlacer::SimPLGlobalPlacer(e_ap_analytical_solver analytical_solver_ty
     // This can be a long method. Good to time this to see how long it takes to
     // construct the global placer.
     vtr::ScopedStartFinishTimer global_placer_building_timer("Constructing Global Placer");
+
+    // Build the arc delay estimator used to update the timing information.
+    if (pre_cluster_timing_manager_.is_valid()) {
+        VTR_LOGV(log_verbosity_ >= 10, "\tBuilding the arc delay estimator...\n");
+        arc_delay_estimator_ = std::make_unique<FlatPlacementArcDelayEstimator>(ap_netlist_,
+                                                                                *pre_cluster_timing_manager_.get_delay_calculator_ptr(),
+                                                                                *place_delay_model_,
+                                                                                device_grid);
+    }
 
     // Build the solver.
     VTR_LOGV(log_verbosity_ >= 10, "\tBuilding the solver...\n");
@@ -258,104 +269,30 @@ static void print_SimPL_status(size_t iteration,
 }
 
 /**
- * @brief Queries the delay model at a single reference tile pair (grid center
- *        to center+1) to get a representative delay-per-tile estimate.
- *
- * Used as a fallback when the delay model returns ROUTER_LOOKAHEAD_NO_PATH_SENTINEL
- * for a driver/sink pair. Returns 0.0f if the reference point is also missing.
- *
- * TODO: It is possible that the tile at the center of the device has no possible
- *       routes within one tile unit. We should have a more systematic way of
- *       doing this. For now this is better than just returning 0.0.
- */
-static float get_delay_per_tile(const PlaceDelayModel& place_delay_model) {
-    const auto& grid = g_vpr_ctx.device().grid;
-    int cx = (int)grid.width() / 2;
-    int cy = (int)grid.height() / 2;
-    t_physical_tile_loc from_loc(cx, cy, 0);
-    t_physical_tile_loc to_loc(cx + 1, cy, 0);
-    float d = place_delay_model.delay(from_loc, 0, to_loc, 0);
-    if (d >= ROUTER_LOOKAHEAD_NO_PATH_SENTINEL)
-        return 0.0f;
-    return d;
-}
-
-/**
  * @brief Helper method for updating the timing information in the pre-cluster
  *        timing manager using a flat placement as a hint for where the atoms
  *        will be placed.
  *
  *  @param pre_cluster_timing_manager
  *      Manager object which computes the slacks of timing edges.
- *  @param place_delay_model
- *      A delay model which can approximate the delay of wires over some distance.
+ *  @param arc_delay_estimator
+ *      Estimator used to compute the delays of timing arcs from the flat
+ *      placement. May be nullptr if the timing manager is invalid.
  *  @param p_placement
  *      The flat placement used to update the timing information.
- *  @param ap_netlist
- *      The AP netlist the p_placement uses.
  */
 static void update_timing_info_with_gp_placement(PreClusterTimingManager& pre_cluster_timing_manager,
-                                                 const PlaceDelayModel& place_delay_model,
-                                                 const PartialPlacement& p_placement,
-                                                 const APNetlist& ap_netlist) {
+                                                 const FlatPlacementArcDelayEstimator* arc_delay_estimator,
+                                                 const PartialPlacement& p_placement) {
     // If the timing manager is invalid (i.e. timing analysis is off), do not
     // update.
     if (!pre_cluster_timing_manager.is_valid())
         return;
+    VTR_ASSERT_SAFE(arc_delay_estimator != nullptr);
 
-    // For each AP pin, update the delay of the timing arc going through it.
-    // The timing manager operates on the Atom netlist; however, by construction
-    // of the AP netlist, every atom pin corresponds 1to1 to an AP pin.
-    for (APPinId ap_pin_id : ap_netlist.pins()) {
-        // Timing arcs are uniquely identified by the sink pin. Only update
-        // timing for sink pins.
-        if (ap_netlist.pin_type(ap_pin_id) != PinType::SINK)
-            continue;
-
-        // Get the driver and sink blocks for this timing arc based on the net
-        // that terminates at this sink pin.
-        APNetId ap_net_id = ap_netlist.pin_net(ap_pin_id);
-        APBlockId ap_driver_block_id = ap_netlist.net_driver_block(ap_net_id);
-        APBlockId ap_sink_block_id = ap_netlist.pin_block(ap_pin_id);
-
-        // Get the physical tile locations that each block is located in according
-        // to the flat placement.
-        t_physical_tile_loc driver_block_loc(p_placement.block_x_locs[ap_driver_block_id],
-                                             p_placement.block_y_locs[ap_driver_block_id],
-                                             p_placement.block_layer_nums[ap_driver_block_id]);
-        t_physical_tile_loc sink_block_loc(p_placement.block_x_locs[ap_sink_block_id],
-                                           p_placement.block_y_locs[ap_sink_block_id],
-                                           p_placement.block_layer_nums[ap_sink_block_id]);
-
-        // Use the place delay model to get the expected delay of going from
-        // the driver block to the sink block tile.
-        // NOTE: We may not have enough information to know which pin the driver
-        //       and sink block will use; however the delay models that we care
-        //       about do not use this feature yet.
-        //       We do not know this information since those pins are cluster-
-        //       level pins, and the cluster-level blocks have not been created
-        //       yet.
-        // TODO: Handle the from and to pins better.
-        float delay = place_delay_model.delay(driver_block_loc,
-                                              0 /*from_pin*/,
-                                              sink_block_loc,
-                                              0 /*to_pin*/);
-        // The delay model returns ROUTER_LOOKAHEAD_NO_PATH_SENTINEL when it
-        // has no entry for this driver/sink pair (a gap in the model). Use a
-        // distance-based estimate so the solver still sees timing pressure on
-        // these arcs rather than treating them as free (delay = 0).
-        if (delay >= ROUTER_LOOKAHEAD_NO_PATH_SENTINEL) {
-            int manhattan_dist = std::abs(driver_block_loc.x - sink_block_loc.x)
-                                 + std::abs(driver_block_loc.y - sink_block_loc.y);
-            delay = manhattan_dist * get_delay_per_tile(place_delay_model);
-        }
-
-        // Get the atom pin associated with this AP pin (i.e. the one the AP
-        // netlist is modeling).
-        AtomPinId atom_sink_pin_id = ap_netlist.pin_atom_pin(ap_pin_id);
-        // Set the timing arc delay for this atom sink pin.
-        pre_cluster_timing_manager.set_timing_arc_delay(atom_sink_pin_id, delay);
-    }
+    // Re-estimate the delays of all timing arcs using the flat placement.
+    arc_delay_estimator->update_arc_delays(p_placement,
+                                           *pre_cluster_timing_manager.get_delay_calculator_ptr());
 
     // If the timing update type is incremental, we need to invalidate all edges which have changed.
     // We assume here that all edge delays change in some way. We could do a more complicated
@@ -429,9 +366,8 @@ PartialPlacement SimPLGlobalPlacer::place() {
         // Perform a timing update
         float timing_update_start_time = runtime_timer.elapsed_sec();
         update_timing_info_with_gp_placement(pre_cluster_timing_manager_,
-                                             *place_delay_model_.get(),
-                                             p_placement,
-                                             ap_netlist_);
+                                             arc_delay_estimator_.get(),
+                                             p_placement);
         solver_->update_net_weights(pre_cluster_timing_manager_);
         float timing_update_end_time = runtime_timer.elapsed_sec();
 
@@ -489,9 +425,8 @@ PartialPlacement SimPLGlobalPlacer::place() {
     // inside the GP loop) since the best_p_placement may not be the p_placement
     // from the last iteration of GP.
     update_timing_info_with_gp_placement(pre_cluster_timing_manager_,
-                                         *place_delay_model_.get(),
-                                         best_p_placement,
-                                         ap_netlist_);
+                                         arc_delay_estimator_.get(),
+                                         best_p_placement);
 
     // Print statistics on the solver used.
     solver_->print_statistics();
