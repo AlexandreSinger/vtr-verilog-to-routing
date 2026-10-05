@@ -9,17 +9,23 @@
 #include "ap_timing_estimation.h"
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include "PreClusterDelayCalculator.h"
 #include "PreClusterTimingManager.h"
 #include "ap_netlist.h"
+#include "atom_lookup.h"
+#include "atom_netlist.h"
 #include "device_grid.h"
+#include "globals.h"
 #include "partial_placement.h"
 #include "pb_type_graph.h"
 #include "physical_types.h"
 #include "place_delay_model.h"
 #include "router_lookahead_constants.h"
+#include "tatum/TimingGraph.hpp"
 #include "timing_info.h"
 #include "vtr_assert.h"
 #include "vtr_hash.h"
@@ -149,8 +155,8 @@ float FlatPlacementArcDelayEstimator::estimate_inter_cluster_arc_delay_(APPinId 
            + pin_cluster_boundary_delay_[sink_pin_id];
 }
 
-float FlatPlacementArcDelayEstimator::estimate_arc_delay(APPinId sink_pin_id,
-                                                         const PartialPlacement& p_placement) const {
+e_flat_placement_arc_type FlatPlacementArcDelayEstimator::get_arc_type(APPinId sink_pin_id,
+                                                                       const PartialPlacement& p_placement) const {
     VTR_ASSERT_SAFE(ap_netlist_.pin_type(sink_pin_id) == PinType::SINK);
     APNetId net_id = ap_netlist_.pin_net(sink_pin_id);
 
@@ -161,16 +167,12 @@ float FlatPlacementArcDelayEstimator::estimate_arc_delay(APPinId sink_pin_id,
     // NOTE: The AP netlist speculatively marks any net connected to a clock
     //       port or a non-clock global port as global.
     if (ap_netlist_.net_is_global(net_id))
-        return 0.0f;
+        return e_flat_placement_arc_type::UNROUTED_GLOBAL;
 
     // Constant nets which are not routed (see --constant_net_method) have no
     // routing delay.
     if (ap_netlist_.net_is_constant(net_id) && ap_netlist_.net_is_ignored(net_id))
-        return 0.0f;
-
-    APPinId driver_pin_id = ap_netlist_.net_driver(net_id);
-    VTR_ASSERT_SAFE_MSG(driver_pin_id.is_valid(),
-                        "Cannot estimate the delay of an arc without a driver");
+        return e_flat_placement_arc_type::UNROUTED_CONSTANT;
 
     // If the driver and sink blocks are in the same tile, assume that they
     // will be packed into the same cluster and use the intra-cluster delay
@@ -178,19 +180,39 @@ float FlatPlacementArcDelayEstimator::estimate_arc_delay(APPinId sink_pin_id,
     // NOTE: This ignores the case where two blocks in the same tile are in
     //       different sub-tiles (for example, two IO blocks placed in the same
     //       IO tile). In that case there is usually no intra-cluster path
-    //       between the pins, and the inter-cluster estimate below is used.
-    float intra_cluster_delay = sink_pin_intra_cluster_delay_[sink_pin_id];
-    if (intra_cluster_delay >= 0.0f) {
+    //       between the pins, and the arc is routed between clusters.
+    if (sink_pin_intra_cluster_delay_[sink_pin_id] >= 0.0f) {
+        APPinId driver_pin_id = ap_netlist_.net_driver(net_id);
+        VTR_ASSERT_SAFE_MSG(driver_pin_id.is_valid(),
+                            "Cannot estimate the delay of an arc without a driver");
         APBlockId driver_blk_id = ap_netlist_.pin_block(driver_pin_id);
         APBlockId sink_blk_id = ap_netlist_.pin_block(sink_pin_id);
         t_physical_tile_loc driver_loc = get_containing_tile_root_loc(driver_blk_id, p_placement, device_grid_);
         t_physical_tile_loc sink_loc = get_containing_tile_root_loc(sink_blk_id, p_placement, device_grid_);
         if (driver_loc == sink_loc)
-            return intra_cluster_delay;
+            return e_flat_placement_arc_type::INTRA_CLUSTER;
     }
 
     // Otherwise, the arc must be routed between clusters.
-    return estimate_inter_cluster_arc_delay_(driver_pin_id, sink_pin_id, p_placement);
+    return e_flat_placement_arc_type::INTER_CLUSTER;
+}
+
+float FlatPlacementArcDelayEstimator::estimate_arc_delay(APPinId sink_pin_id,
+                                                         const PartialPlacement& p_placement) const {
+    switch (get_arc_type(sink_pin_id, p_placement)) {
+        case e_flat_placement_arc_type::UNROUTED_GLOBAL:
+        case e_flat_placement_arc_type::UNROUTED_CONSTANT:
+            return 0.0f;
+        case e_flat_placement_arc_type::INTRA_CLUSTER:
+            return sink_pin_intra_cluster_delay_[sink_pin_id];
+        case e_flat_placement_arc_type::INTER_CLUSTER:
+        default: {
+            APPinId driver_pin_id = ap_netlist_.net_driver(ap_netlist_.pin_net(sink_pin_id));
+            VTR_ASSERT_SAFE_MSG(driver_pin_id.is_valid(),
+                                "Cannot estimate the delay of an arc without a driver");
+            return estimate_inter_cluster_arc_delay_(driver_pin_id, sink_pin_id, p_placement);
+        }
+    }
 }
 
 void FlatPlacementArcDelayEstimator::update_arc_delays(const PartialPlacement& p_placement,
@@ -206,6 +228,81 @@ void FlatPlacementArcDelayEstimator::update_arc_delays(const PartialPlacement& p
 
         float delay = estimate_arc_delay(ap_pin_id, p_placement);
         delay_calc.set_arc_delay(ap_netlist_.pin_atom_pin(ap_pin_id), delay);
+    }
+}
+
+/**
+ * @brief Get a short name for the given pre-cluster arc type, for debug output.
+ */
+static const char* pre_cluster_arc_type_name(e_pre_cluster_arc_type arc_type) {
+    switch (arc_type) {
+        case e_pre_cluster_arc_type::INTRA_MOLECULE:
+            return "intra_molecule";
+        case e_pre_cluster_arc_type::INTER_MOLECULE_CHAIN:
+            return "chain";
+        case e_pre_cluster_arc_type::EXTERNAL:
+        default:
+            return "external";
+    }
+}
+
+/**
+ * @brief Get a short name for the given flat placement arc type, for debug output.
+ */
+static const char* flat_placement_arc_type_name(e_flat_placement_arc_type arc_type) {
+    switch (arc_type) {
+        case e_flat_placement_arc_type::UNROUTED_GLOBAL:
+            return "unrouted_global";
+        case e_flat_placement_arc_type::UNROUTED_CONSTANT:
+            return "unrouted_constant";
+        case e_flat_placement_arc_type::INTRA_CLUSTER:
+            return "intra_cluster";
+        case e_flat_placement_arc_type::INTER_CLUSTER:
+        default:
+            return "inter_cluster";
+    }
+}
+
+void FlatPlacementArcDelayEstimator::write_arc_info(const std::string& filename,
+                                                    const PartialPlacement& p_placement,
+                                                    const PreClusterDelayCalculator& delay_calc,
+                                                    const tatum::TimingGraph& timing_graph) const {
+    const AtomNetlist& atom_netlist = g_vpr_ctx.atom().netlist();
+    const AtomLookup& atom_lookup = g_vpr_ctx.atom().lookup();
+
+    // Create a lookup from atom sink pins to the AP pins that model them.
+    vtr::vector<AtomPinId, APPinId> atom_to_ap_pin(atom_netlist.pins().size());
+    for (APPinId ap_pin_id : ap_netlist_.pins())
+        atom_to_ap_pin[ap_netlist_.pin_atom_pin(ap_pin_id)] = ap_pin_id;
+
+    std::ofstream os(filename);
+    os << "# edge: <timing edge id> type: <how the delay is computed> fanout: <net fanout>"
+       << " src_pin: <source pb_graph pin> sink_pin: <sink pb_graph pin>\n";
+    for (tatum::EdgeId edge_id : timing_graph.edges()) {
+        if (timing_graph.edge_type(edge_id) != tatum::EdgeType::INTERCONNECT)
+            continue;
+        AtomPinId src_pin = atom_lookup.tnode_atom_pin(timing_graph.edge_src_node(edge_id));
+        AtomPinId sink_pin = atom_lookup.tnode_atom_pin(timing_graph.edge_sink_node(edge_id));
+        if (!src_pin.is_valid() || !sink_pin.is_valid())
+            continue;
+
+        // Arcs handled internally by the delay calculator are reported with
+        // the calculator's arc type. Other arcs are reported with the arc type
+        // used by this estimator.
+        const char* arc_type_name;
+        e_pre_cluster_arc_type pre_cluster_arc_type = delay_calc.get_arc_type(src_pin, sink_pin);
+        APPinId ap_sink_pin = atom_to_ap_pin[sink_pin];
+        if (pre_cluster_arc_type != e_pre_cluster_arc_type::EXTERNAL || !ap_sink_pin.is_valid())
+            arc_type_name = pre_cluster_arc_type_name(pre_cluster_arc_type);
+        else
+            arc_type_name = flat_placement_arc_type_name(get_arc_type(ap_sink_pin, p_placement));
+
+        os << "edge: " << size_t(edge_id)
+           << " type: " << arc_type_name
+           << " fanout: " << atom_netlist.net_sinks(atom_netlist.pin_net(src_pin)).size()
+           << " src_pin: " << delay_calc.find_pb_graph_pin(src_pin)->to_string(false)
+           << " sink_pin: " << delay_calc.find_pb_graph_pin(sink_pin)->to_string(false)
+           << "\n";
     }
 }
 

@@ -11,6 +11,7 @@
  * placement.
  */
 
+#include <string>
 #include "ap_netlist_fwd.h"
 #include "vtr_vector.h"
 
@@ -20,6 +21,19 @@ class PlaceDelayModel;
 class PreClusterDelayCalculator;
 class PreClusterTimingManager;
 struct PartialPlacement;
+namespace tatum {
+class TimingGraph;
+}
+
+/**
+ * @brief How the arc delay estimator computes the delay of a timing arc.
+ */
+enum class e_flat_placement_arc_type {
+    UNROUTED_GLOBAL,   ///< The arc is on a global net, which is not routed.
+    UNROUTED_CONSTANT, ///< The arc is on a constant net which is not routed.
+    INTRA_CLUSTER,     ///< The driver and sink are in the same tile with an intra-cluster path between them.
+    INTER_CLUSTER      ///< The arc is routed between clusters.
+};
 
 /**
  * @brief Estimator for the post-routing delays of the timing arcs between
@@ -81,6 +95,13 @@ class FlatPlacementArcDelayEstimator {
                              const PartialPlacement& p_placement) const;
 
     /**
+     * @brief Get how the delay of the timing arc which terminates at the
+     *        given AP sink pin is estimated, using the given flat placement.
+     */
+    e_flat_placement_arc_type get_arc_type(APPinId sink_pin_id,
+                                           const PartialPlacement& p_placement) const;
+
+    /**
      * @brief Re-estimate the delays of all timing arcs in the AP netlist using
      *        the given flat placement and store them in the delay calculator.
      *
@@ -92,6 +113,26 @@ class FlatPlacementArcDelayEstimator {
      */
     void update_arc_delays(const PartialPlacement& p_placement,
                            PreClusterDelayCalculator& delay_calc) const;
+
+    /**
+     * @brief Write information on every interconnect timing arc to the given
+     *        file, for debugging the accuracy of the arc delay estimates.
+     *
+     * One line is written per interconnect edge in the timing graph, with the
+     * edge ID, how its delay is computed (by the delay calculator or by this
+     * estimator), the fanout of its net, and the pb_graph pins expected to
+     * implement its source and sink. The edge IDs match the edge IDs in the
+     * timing graph echo files.
+     *
+     *  @param filename     The file to write to.
+     *  @param p_placement  The flat placement the delays were estimated with.
+     *  @param delay_calc   The delay calculator the delays were stored in.
+     *  @param timing_graph The timing graph the delay calculator is over.
+     */
+    void write_arc_info(const std::string& filename,
+                        const PartialPlacement& p_placement,
+                        const PreClusterDelayCalculator& delay_calc,
+                        const tatum::TimingGraph& timing_graph) const;
 
   private:
     /**

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <string>
 #include <unordered_set>
 #include "PreClusterDelayCalculator.h"
 #include "ap_netlist.h"
@@ -226,6 +227,13 @@ t_ap_timing_estimate estimate_post_routing_timing(const PartialPlacement& p_plac
                           *timing_ctx.constraints,
                           *delay_calc,
                           analyzer);
+
+        // Also write how the delay of each interconnect arc was computed, so
+        // the error of the estimate can be broken down by arc type.
+        arc_delay_estimator.write_arc_info(getEchoFileName(E_ECHO_AP_POST_ROUTING_TIMING_ESTIMATE_GRAPH) + std::string(".arc_info"),
+                                           p_placement,
+                                           *delay_calc,
+                                           *timing_ctx.graph);
     }
 
     t_ap_timing_estimate timing_estimate;

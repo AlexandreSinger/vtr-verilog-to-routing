@@ -22,6 +22,16 @@
 
 class LogicalModels;
 
+/**
+ * @brief How the pre-cluster delay calculator computes the delay of an
+ *        interconnect timing arc.
+ */
+enum class e_pre_cluster_arc_type {
+    INTRA_MOLECULE,       ///< The driver and sink are in the same molecule. Uses the intra-cluster delay.
+    INTER_MOLECULE_CHAIN, ///< The driver and sink are in different molecules of the same chain. Uses the chain delay.
+    EXTERNAL              ///< Any other arc. Uses the arc delay set by set_arc_delay.
+};
+
 class PreClusterDelayCalculator : public tatum::DelayCalculator {
   public:
     /**
@@ -109,6 +119,36 @@ class PreClusterDelayCalculator : public tatum::DelayCalculator {
         return gpin;
     }
 
+    /**
+     * @brief Get how the delay of the interconnect timing arc between the
+     *        given source and sink primitive pins is computed.
+     *
+     * Arcs between atoms in the same molecule use an intra-cluster delay, arcs
+     * between molecules of the same chain (e.g. a long carry chain split
+     * across multiple clusters) use a chain delay, and all other arcs use the
+     * delay set by set_arc_delay.
+     *
+     *  @param src_pin  The source pin of the arc. May be invalid if the
+     *                  source timing node has no atom pin.
+     *  @param sink_pin The sink pin of the arc.
+     */
+    e_pre_cluster_arc_type get_arc_type(AtomPinId src_pin, AtomPinId sink_pin) const {
+        if (!src_pin.is_valid())
+            return e_pre_cluster_arc_type::EXTERNAL;
+
+        PackMoleculeId src_mol = prepacker_.get_atom_molecule(netlist_.pin_block(src_pin));
+        PackMoleculeId sink_mol = prepacker_.get_atom_molecule(netlist_.pin_block(sink_pin));
+        if (src_mol == sink_mol)
+            return e_pre_cluster_arc_type::INTRA_MOLECULE;
+
+        const t_pack_molecule& src_mol_info = prepacker_.get_molecule(src_mol);
+        const t_pack_molecule& sink_mol_info = prepacker_.get_molecule(sink_mol);
+        if (src_mol_info.chain_id.is_valid() && src_mol_info.chain_id == sink_mol_info.chain_id)
+            return e_pre_cluster_arc_type::INTER_MOLECULE_CHAIN;
+
+        return e_pre_cluster_arc_type::EXTERNAL;
+    }
+
     tatum::Time max_edge_delay(const tatum::TimingGraph& tg, tatum::EdgeId edge_id) const override {
         tatum::NodeId src_node = tg.edge_src_node(edge_id);
         tatum::NodeId sink_node = tg.edge_sink_node(edge_id);
@@ -128,44 +168,34 @@ class PreClusterDelayCalculator : public tatum::DelayCalculator {
             VTR_ASSERT_SAFE(atom_sink_pin.is_valid());
             VTR_ASSERT_SAFE(netlist_.pin_type(atom_sink_pin) == PinType::SINK);
 
-            // If the source and sink atoms belong to the same molecule they will
-            // be packed into the same cluster, so the inter-cluster delay is a
-            // significant overestimate. Use a more accurate intra-cluster delay
-            // derived from the pb_graph hierarchy instead.
             AtomPinId atom_src_pin = netlist_lookup_.tnode_atom_pin(src_node);
-            if (atom_src_pin.is_valid()) {
-                AtomBlockId src_blk = netlist_.pin_block(atom_src_pin);
-                AtomBlockId sink_blk = netlist_.pin_block(atom_sink_pin);
-
-                PackMoleculeId src_mol = prepacker_.get_atom_molecule(src_blk);
-                PackMoleculeId sink_mol = prepacker_.get_atom_molecule(sink_blk);
-
-                if (src_mol == sink_mol) {
+            switch (get_arc_type(atom_src_pin, atom_sink_pin)) {
+                case e_pre_cluster_arc_type::INTRA_MOLECULE: {
+                    // The source and sink atoms will be packed into the same
+                    // cluster, so the inter-cluster delay is a significant
+                    // overestimate. Use a more accurate intra-cluster delay
+                    // derived from the pb_graph hierarchy instead.
                     tatum::Time cached = intra_molecule_delay_cache_[edge_id];
                     if (!std::isnan(cached.value())) return cached;
                     tatum::Time delay = calc_intra_molecule_delay(atom_src_pin, atom_sink_pin);
                     intra_molecule_delay_cache_[edge_id] = delay;
                     return delay;
                 }
-
-                // If the source and sink atoms belong to different molecules
-                // that are part of the same chain (e.g. a long carry chain
-                // split across multiple clusters), the connection uses
-                // dedicated chain wiring between clusters rather than
-                // general-purpose inter-cluster routing.
-                const t_pack_molecule& src_mol_info = prepacker_.get_molecule(src_mol);
-                const t_pack_molecule& sink_mol_info = prepacker_.get_molecule(sink_mol);
-                if (src_mol_info.chain_id.is_valid() && src_mol_info.chain_id == sink_mol_info.chain_id) {
+                case e_pre_cluster_arc_type::INTER_MOLECULE_CHAIN: {
+                    // The connection uses dedicated chain wiring between
+                    // clusters rather than general-purpose inter-cluster
+                    // routing.
                     tatum::Time cached = chain_delay_cache_[edge_id];
                     if (!std::isnan(cached.value())) return cached;
                     tatum::Time delay = calc_inter_molecule_chain_delay(atom_src_pin, atom_sink_pin);
                     chain_delay_cache_[edge_id] = delay;
                     return delay;
                 }
+                case e_pre_cluster_arc_type::EXTERNAL:
+                default:
+                    // External net delay
+                    return tatum::Time(timing_arc_delays_[atom_sink_pin]);
             }
-
-            // External net delay
-            return tatum::Time(timing_arc_delays_[atom_sink_pin]);
         }
     }
 

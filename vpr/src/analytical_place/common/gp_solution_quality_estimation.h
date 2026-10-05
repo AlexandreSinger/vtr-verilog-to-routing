@@ -59,6 +59,8 @@ double estimate_post_routing_wire_usage(const PartialPlacement& p_placement,
  * (including the estimated delay of every edge) is written to it. This can be
  * compared edge-by-edge against the post-routing analysis timing graph echo
  * file, since both are over the same atom-level timing graph.
+ * Information on how the delay of each interconnect arc was computed is also
+ * written to a companion file (with the suffix ".arc_info").
  *
  * NOTE: The arc delays in the given delay calculator are overwritten. Any
  *       timing info which shares this delay calculator (for example, the one
