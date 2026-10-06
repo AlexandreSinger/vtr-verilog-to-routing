@@ -91,17 +91,22 @@ FlatPlacementArcDelayEstimator::FlatPlacementArcDelayEstimator(const APNetlist& 
         const t_pb_graph_pin* gpin = delay_calc.find_pb_graph_pin(ap_netlist_.pin_atom_pin(pin_id));
 
         // Compute the delay between the pin and the boundary of its cluster.
-        // If no path to the boundary is found, assume that the delay is small.
+        // The expected pb_graph pin may not be connected to the boundary of
+        // its cluster (for example, a LUT within an arithmetic mode which only
+        // drives an adder), even though the primitive will be packed somewhere
+        // that is. Use the minimum delay over the equivalent pins, the same as
+        // the intra-cluster delays below. If no path to the boundary is found,
+        // assume that the delay is small.
         float boundary_delay;
         if (ap_netlist_.pin_type(pin_id) == PinType::DRIVER) {
             auto [it, inserted] = to_boundary_cache.try_emplace(gpin, 0.0f);
             if (inserted)
-                it->second = calc_pb_graph_delay_to_root_pin(gpin);
+                it->second = calc_min_equivalent_pin_delay_to_root_pin(gpin);
             boundary_delay = it->second;
         } else {
             auto [it, inserted] = from_boundary_cache.try_emplace(gpin, 0.0f);
             if (inserted)
-                it->second = calc_pb_graph_delay_from_root_pin(gpin);
+                it->second = calc_min_equivalent_pin_delay_from_root_pin(gpin);
             boundary_delay = it->second;
         }
         pin_cluster_boundary_delay_[pin_id] = std::max(boundary_delay, 0.0f);
@@ -126,7 +131,7 @@ FlatPlacementArcDelayEstimator::FlatPlacementArcDelayEstimator(const APNetlist& 
 }
 
 float FlatPlacementArcDelayEstimator::get_reference_routing_delay_(const t_physical_tile_loc& driver_loc,
-                                                                    const t_physical_tile_loc& sink_loc) const {
+                                                                   const t_physical_tile_loc& sink_loc) const {
     int dx = std::abs(driver_loc.x - sink_loc.x);
     int dy = std::abs(driver_loc.y - sink_loc.y);
 
@@ -197,10 +202,11 @@ e_flat_placement_arc_type FlatPlacementArcDelayEstimator::get_arc_type(APPinId s
     VTR_ASSERT_SAFE(ap_netlist_.pin_type(sink_pin_id) == PinType::SINK);
     APNetId net_id = ap_netlist_.pin_net(sink_pin_id);
 
-    // Global nets are not routed through the general routing network.
+    // Global nets are not routed through the general routing network, so
+    // these arcs only have intra-cluster delays.
     // TODO: This is only true for ideal clock modeling. With other clock
     //       modeling options (e.g. route or dedicated_network) clock nets
-    //       are routed and will have a delay.
+    //       are routed and will have a routing delay.
     // NOTE: The AP netlist speculatively marks any net connected to a clock
     //       port or a non-clock global port as global.
     if (ap_netlist_.net_is_global(net_id))
@@ -237,7 +243,16 @@ e_flat_placement_arc_type FlatPlacementArcDelayEstimator::get_arc_type(APPinId s
 float FlatPlacementArcDelayEstimator::estimate_arc_delay(APPinId sink_pin_id,
                                                          const PartialPlacement& p_placement) const {
     switch (get_arc_type(sink_pin_id, p_placement)) {
-        case e_flat_placement_arc_type::UNROUTED_GLOBAL:
+        case e_flat_placement_arc_type::UNROUTED_GLOBAL: {
+            // Global nets are not routed, but the arc still goes through the
+            // driver and sink clusters. This matches the post-cluster delay
+            // calculator, which gives these arcs the intra-cluster delays to
+            // and from the cluster pins with no routing delay between them.
+            APPinId driver_pin_id = ap_netlist_.net_driver(ap_netlist_.pin_net(sink_pin_id));
+            if (!driver_pin_id.is_valid())
+                return pin_cluster_boundary_delay_[sink_pin_id];
+            return pin_cluster_boundary_delay_[driver_pin_id] + pin_cluster_boundary_delay_[sink_pin_id];
+        }
         case e_flat_placement_arc_type::UNROUTED_CONSTANT:
             return 0.0f;
         case e_flat_placement_arc_type::INTRA_CLUSTER:

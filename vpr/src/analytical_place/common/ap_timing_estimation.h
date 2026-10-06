@@ -30,7 +30,7 @@ class TimingGraph;
  * @brief How the arc delay estimator computes the delay of a timing arc.
  */
 enum class e_flat_placement_arc_type {
-    UNROUTED_GLOBAL,   ///< The arc is on a global net, which is not routed.
+    UNROUTED_GLOBAL,   ///< The arc is on a global net, which is not routed. Only the intra-cluster delays to and from the cluster boundaries are included.
     UNROUTED_CONSTANT, ///< The arc is on a constant net which is not routed.
     INTRA_CLUSTER,     ///< The driver and sink are in the same tile with an intra-cluster path between them.
     INTER_CLUSTER      ///< The arc is routed between clusters.
@@ -45,8 +45,13 @@ enum class e_flat_placement_arc_type {
  * in the pre-cluster delay calculator.
  *
  * The delay of an arc is estimated as follows:
- *  - Arcs on global nets and unrouted constant nets have no delay, since these
- *    nets are not routed through the general routing network.
+ *  - Arcs on global nets are not routed through the general routing network,
+ *    so they are given the intra-cluster delay from the driver primitive pin
+ *    to the boundary of its cluster plus the intra-cluster delay from the
+ *    boundary of the sink cluster to the sink primitive pin, with no routing
+ *    delay in between. This matches how VPR computes the delays of these arcs
+ *    after packing.
+ *  - Arcs on unrouted constant nets have no delay.
  *  - If the driver and sink blocks are in the same tile, they are assumed to
  *    be clustered together. The arc is given the delay of the intra-cluster
  *    path between the two primitive pins (if such a path exists).
@@ -177,7 +182,8 @@ class FlatPlacementArcDelayEstimator {
     ///        the cluster that its block will be packed into. For driver pins,
     ///        this is the delay from the pin to the cluster's output pins; for
     ///        sink pins, this is the delay from the cluster's input pins to
-    ///        the pin.
+    ///        the pin. This is the minimum over the pb_graph pins equivalent to
+    ///        the pin's expected pb_graph pin.
     vtr::vector<APPinId, float> pin_cluster_boundary_delay_;
 
     /// @brief The intra-cluster delay between the driver of each AP sink pin's
