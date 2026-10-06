@@ -10,19 +10,24 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 #include "PreClusterDelayCalculator.h"
 #include "PreClusterTimingManager.h"
 #include "ap_netlist.h"
 #include "atom_lookup.h"
 #include "atom_netlist.h"
+#include "clb2clb_directs.h"
 #include "device_grid.h"
 #include "globals.h"
 #include "partial_placement.h"
 #include "pb_type_graph.h"
 #include "physical_types.h"
+#include "physical_types_util.h"
 #include "place_delay_model.h"
 #include "router_lookahead_constants.h"
 #include "tatum/TimingGraph.hpp"
@@ -128,6 +133,152 @@ FlatPlacementArcDelayEstimator::FlatPlacementArcDelayEstimator(const APNetlist& 
             it->second = calc_min_equivalent_pin_path_delay(driver_gpin, gpin);
         sink_pin_intra_cluster_delay_[pin_id] = it->second;
     }
+
+    precompute_direct_arcs_(delay_calc);
+}
+
+/// @brief A pin of a physical tile type.
+using t_tile_pin = std::pair<t_physical_tile_type_ptr, int>;
+
+/// @brief Switch index used for direct connections which do not specify a
+///        switch, which use the delayless switch.
+static constexpr int DIRECT_DELAYLESS_SWITCH = -1;
+
+/**
+ * @brief Find the physical tile pins which are connected to the given
+ *        primitive pb_graph pin, or any pin equivalent to it, within the
+ *        cluster.
+ *
+ * @param pin                       The primitive pb_graph pin.
+ * @param forward                   If true, find the tile pins which can be
+ *                                  reached from the pin (for driver pins);
+ *                                  otherwise, find the tile pins which can
+ *                                  reach the pin (for sink pins).
+ * @param root_to_logical_block     The logical block type of each root
+ *                                  pb_graph node.
+ */
+static std::set<t_tile_pin> find_connected_tile_pins(const t_pb_graph_pin* pin,
+                                                     bool forward,
+                                                     const std::unordered_map<const t_pb_graph_node*, t_logical_block_type_ptr>& root_to_logical_block) {
+    std::set<t_tile_pin> tile_pins;
+    for (const t_pb_graph_pin* equivalent_pin : find_equivalent_pb_graph_pins(pin)) {
+        std::vector<const t_pb_graph_pin*> stack = {equivalent_pin};
+        std::unordered_set<const t_pb_graph_pin*> visited = {equivalent_pin};
+        while (!stack.empty()) {
+            const t_pb_graph_pin* cur_pin = stack.back();
+            stack.pop_back();
+
+            // Root block pins are on the boundary of the cluster. Find the
+            // pins of every physical tile that can implement the cluster.
+            if (cur_pin->is_root_block_pin()) {
+                t_logical_block_type_ptr logical_block = root_to_logical_block.at(cur_pin->parent_node);
+                for (t_physical_tile_type_ptr physical_tile : logical_block->equivalent_tiles) {
+                    int physical_pin = get_physical_pin(physical_tile, logical_block, cur_pin->pin_count_in_cluster);
+                    tile_pins.insert({physical_tile, physical_pin});
+                }
+                continue;
+            }
+
+            const std::vector<t_pb_graph_edge*>& edges = forward ? cur_pin->output_edges : cur_pin->input_edges;
+            for (const t_pb_graph_edge* edge : edges) {
+                int num_pins = forward ? edge->num_output_pins : edge->num_input_pins;
+                for (int ipin = 0; ipin < num_pins; ipin++) {
+                    const t_pb_graph_pin* next_pin = forward ? edge->output_pins[ipin] : edge->input_pins[ipin];
+                    if (visited.insert(next_pin).second)
+                        stack.push_back(next_pin);
+                }
+            }
+        }
+    }
+    return tile_pins;
+}
+
+void FlatPlacementArcDelayEstimator::precompute_direct_arcs_(const PreClusterDelayCalculator& delay_calc) {
+    const DeviceContext& device_ctx = g_vpr_ctx.device();
+    const std::vector<t_direct_inf>& directs = device_ctx.arch->directs;
+    if (directs.empty())
+        return;
+
+    // Resolve the tile pins of each direct connection.
+    std::vector<t_clb_to_clb_directs> clb_to_clb_directs = alloc_and_load_clb_to_clb_directs(directs, DIRECT_DELAYLESS_SWITCH);
+    VTR_ASSERT(clb_to_clb_directs.size() == directs.size());
+
+    std::unordered_map<const t_pb_graph_node*, t_logical_block_type_ptr> root_to_logical_block;
+    for (const t_logical_block_type& logical_block : device_ctx.logical_block_types) {
+        if (logical_block.pb_graph_head != nullptr)
+            root_to_logical_block[logical_block.pb_graph_head] = &logical_block;
+    }
+
+    // Many primitive pins share the same pb_graph pins, so cache the
+    // connected tile pins and the direct arcs of each pair of pb_graph pins.
+    std::unordered_map<const t_pb_graph_pin*, std::set<t_tile_pin>> driver_tile_pins_cache;
+    std::unordered_map<const t_pb_graph_pin*, std::set<t_tile_pin>> sink_tile_pins_cache;
+    std::unordered_map<std::pair<const t_pb_graph_pin*, const t_pb_graph_pin*>, std::vector<t_direct_arc>, vtr::hash_pair> direct_arcs_cache;
+
+    for (APPinId sink_pin_id : ap_netlist_.pins()) {
+        if (ap_netlist_.pin_type(sink_pin_id) != PinType::SINK)
+            continue;
+        APPinId driver_pin_id = ap_netlist_.net_driver(ap_netlist_.pin_net(sink_pin_id));
+        if (!driver_pin_id.is_valid())
+            continue;
+        const t_pb_graph_pin* driver_gpin = delay_calc.find_pb_graph_pin(ap_netlist_.pin_atom_pin(driver_pin_id));
+        const t_pb_graph_pin* sink_gpin = delay_calc.find_pb_graph_pin(ap_netlist_.pin_atom_pin(sink_pin_id));
+
+        auto [it, inserted] = direct_arcs_cache.try_emplace({driver_gpin, sink_gpin});
+        if (inserted) {
+            auto [driver_it, driver_inserted] = driver_tile_pins_cache.try_emplace(driver_gpin);
+            if (driver_inserted)
+                driver_it->second = find_connected_tile_pins(driver_gpin, /*forward=*/true, root_to_logical_block);
+            auto [sink_it, sink_inserted] = sink_tile_pins_cache.try_emplace(sink_gpin);
+            if (sink_inserted)
+                sink_it->second = find_connected_tile_pins(sink_gpin, /*forward=*/false, root_to_logical_block);
+            const std::set<t_tile_pin>& driver_tile_pins = driver_it->second;
+            const std::set<t_tile_pin>& sink_tile_pins = sink_it->second;
+
+            // The arc may use a direct connection if some source pin of the
+            // direct is connected to the driver and the corresponding sink
+            // pin of the direct is connected to the sink.
+            for (size_t idirect = 0; idirect < directs.size(); idirect++) {
+                const t_clb_to_clb_directs& clb_direct = clb_to_clb_directs[idirect];
+                int num_pins = std::abs(clb_direct.from_clb_pin_end_index - clb_direct.from_clb_pin_start_index) + 1;
+                int from_step = clb_direct.from_clb_pin_end_index >= clb_direct.from_clb_pin_start_index ? 1 : -1;
+                int to_step = clb_direct.to_clb_pin_end_index >= clb_direct.to_clb_pin_start_index ? 1 : -1;
+                for (int ipin = 0; ipin < num_pins; ipin++) {
+                    int from_pin = clb_direct.from_clb_pin_start_index + ipin * from_step;
+                    int to_pin = clb_direct.to_clb_pin_start_index + ipin * to_step;
+                    if (driver_tile_pins.count({clb_direct.from_clb_type, from_pin}) == 0
+                        || sink_tile_pins.count({clb_direct.to_clb_type, to_pin}) == 0)
+                        continue;
+                    // The direct connection is the only driver of its sink
+                    // pin, so use a fan-in of 1 if the switch delay depends
+                    // on the fan-in.
+                    float delay = 0.0f;
+                    if (clb_direct.switch_index != DIRECT_DELAYLESS_SWITCH) {
+                        const t_arch_switch_inf& direct_switch = device_ctx.arch_switch_inf[clb_direct.switch_index];
+                        delay = direct_switch.fixed_Tdel() ? direct_switch.Tdel() : direct_switch.Tdel(1);
+                    }
+                    it->second.push_back({directs[idirect].x_offset, directs[idirect].y_offset, delay});
+                    break;
+                }
+            }
+        }
+
+        if (!it->second.empty())
+            sink_pin_direct_arcs_[sink_pin_id] = it->second;
+    }
+}
+
+float FlatPlacementArcDelayEstimator::get_direct_delay_(APPinId sink_pin_id,
+                                                        const t_physical_tile_loc& driver_loc,
+                                                        const t_physical_tile_loc& sink_loc) const {
+    auto it = sink_pin_direct_arcs_.find(sink_pin_id);
+    if (it == sink_pin_direct_arcs_.end() || driver_loc.layer_num != sink_loc.layer_num)
+        return -1.0f;
+    for (const t_direct_arc& direct_arc : it->second) {
+        if (sink_loc.x - driver_loc.x == direct_arc.dx && sink_loc.y - driver_loc.y == direct_arc.dy)
+            return direct_arc.delay;
+    }
+    return -1.0f;
 }
 
 float FlatPlacementArcDelayEstimator::get_reference_routing_delay_(const t_physical_tile_loc& driver_loc,
@@ -236,6 +387,17 @@ e_flat_placement_arc_type FlatPlacementArcDelayEstimator::get_arc_type(APPinId s
             return e_flat_placement_arc_type::INTRA_CLUSTER;
     }
 
+    // If the driver and sink tiles are at the offset of a direct connection
+    // which can implement this arc, assume that the direct connection is used.
+    if (sink_pin_direct_arcs_.count(sink_pin_id) != 0) {
+        APPinId driver_pin_id = ap_netlist_.net_driver(net_id);
+        VTR_ASSERT_SAFE(driver_pin_id.is_valid());
+        t_physical_tile_loc driver_loc = get_containing_tile_root_loc(ap_netlist_.pin_block(driver_pin_id), p_placement, device_grid_);
+        t_physical_tile_loc sink_loc = get_containing_tile_root_loc(ap_netlist_.pin_block(sink_pin_id), p_placement, device_grid_);
+        if (get_direct_delay_(sink_pin_id, driver_loc, sink_loc) >= 0.0f)
+            return e_flat_placement_arc_type::INTER_CLUSTER_DIRECT;
+    }
+
     // Otherwise, the arc must be routed between clusters.
     return e_flat_placement_arc_type::INTER_CLUSTER;
 }
@@ -257,6 +419,19 @@ float FlatPlacementArcDelayEstimator::estimate_arc_delay(APPinId sink_pin_id,
             return 0.0f;
         case e_flat_placement_arc_type::INTRA_CLUSTER:
             return sink_pin_intra_cluster_delay_[sink_pin_id];
+        case e_flat_placement_arc_type::INTER_CLUSTER_DIRECT: {
+            // The arc goes through the driver and sink clusters and the
+            // switch of the direct connection between them.
+            APPinId driver_pin_id = ap_netlist_.net_driver(ap_netlist_.pin_net(sink_pin_id));
+            VTR_ASSERT_SAFE(driver_pin_id.is_valid());
+            t_physical_tile_loc driver_loc = get_containing_tile_root_loc(ap_netlist_.pin_block(driver_pin_id), p_placement, device_grid_);
+            t_physical_tile_loc sink_loc = get_containing_tile_root_loc(ap_netlist_.pin_block(sink_pin_id), p_placement, device_grid_);
+            float direct_delay = get_direct_delay_(sink_pin_id, driver_loc, sink_loc);
+            VTR_ASSERT_SAFE(direct_delay >= 0.0f);
+            return pin_cluster_boundary_delay_[driver_pin_id]
+                   + direct_delay
+                   + pin_cluster_boundary_delay_[sink_pin_id];
+        }
         case e_flat_placement_arc_type::INTER_CLUSTER:
         default: {
             APPinId driver_pin_id = ap_netlist_.net_driver(ap_netlist_.pin_net(sink_pin_id));
@@ -309,6 +484,8 @@ static const char* flat_placement_arc_type_name(e_flat_placement_arc_type arc_ty
             return "unrouted_constant";
         case e_flat_placement_arc_type::INTRA_CLUSTER:
             return "intra_cluster";
+        case e_flat_placement_arc_type::INTER_CLUSTER_DIRECT:
+            return "inter_cluster_direct";
         case e_flat_placement_arc_type::INTER_CLUSTER:
         default:
             return "inter_cluster";

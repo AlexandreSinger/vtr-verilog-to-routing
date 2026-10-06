@@ -12,6 +12,8 @@
  */
 
 #include <string>
+#include <unordered_map>
+#include <vector>
 #include "ap_netlist_fwd.h"
 #include "vtr_vector.h"
 
@@ -30,10 +32,11 @@ class TimingGraph;
  * @brief How the arc delay estimator computes the delay of a timing arc.
  */
 enum class e_flat_placement_arc_type {
-    UNROUTED_GLOBAL,   ///< The arc is on a global net, which is not routed. Only the intra-cluster delays to and from the cluster boundaries are included.
-    UNROUTED_CONSTANT, ///< The arc is on a constant net which is not routed.
-    INTRA_CLUSTER,     ///< The driver and sink are in the same tile with an intra-cluster path between them.
-    INTER_CLUSTER      ///< The arc is routed between clusters.
+    UNROUTED_GLOBAL,      ///< The arc is on a global net, which is not routed. Only the intra-cluster delays to and from the cluster boundaries are included.
+    UNROUTED_CONSTANT,    ///< The arc is on a constant net which is not routed.
+    INTRA_CLUSTER,        ///< The driver and sink are in the same tile with an intra-cluster path between them.
+    INTER_CLUSTER_DIRECT, ///< The driver and sink clusters are at the offset of a direct connection between them (see the <directlist> of the architecture).
+    INTER_CLUSTER         ///< The arc is routed between clusters.
 };
 
 /**
@@ -55,6 +58,12 @@ enum class e_flat_placement_arc_type {
  *  - If the driver and sink blocks are in the same tile, they are assumed to
  *    be clustered together. The arc is given the delay of the intra-cluster
  *    path between the two primitive pins (if such a path exists).
+ *  - If the arc can be implemented by a direct connection between clusters
+ *    (see the <directlist> of the architecture) and the sink tile is at the
+ *    offset of that direct connection from the driver tile, the arc is given
+ *    the intra-cluster delays to and from the cluster boundaries plus the
+ *    delay of the direct connection's switch. These pins often cannot connect
+ *    to the general routing network at all (e.g. DSP cascades).
  *  - Otherwise, the arc is given the intra-cluster delay from the driver
  *    primitive pin to the boundary of its cluster, plus the inter-tile routing
  *    delay from the place delay model, plus the intra-cluster delay from the
@@ -142,6 +151,40 @@ class FlatPlacementArcDelayEstimator {
 
   private:
     /**
+     * @brief A direct connection between clusters which may implement the
+     *        timing arc of a sink pin.
+     */
+    struct t_direct_arc {
+        int dx;      ///< The x offset from the driver tile to the sink tile.
+        int dy;      ///< The y offset from the driver tile to the sink tile.
+        float delay; ///< The delay of the direct connection's switch.
+    };
+
+    /**
+     * @brief Find the timing arcs which may be implemented by a direct
+     *        connection between clusters and store them in
+     *        sink_pin_direct_arcs_.
+     *
+     * An arc may be implemented by a direct connection if some pin equivalent
+     * to the driver's expected pb_graph pin can reach the direct's source tile
+     * pin, and the corresponding sink tile pin of the direct can reach some
+     * pin equivalent to the sink's expected pb_graph pin.
+     */
+    void precompute_direct_arcs_(const PreClusterDelayCalculator& delay_calc);
+
+    /**
+     * @brief Get the delay of the direct connection which implements the arc
+     *        of the given sink pin, if the driver and sink tiles are at the
+     *        offset of such a direct connection.
+     *
+     *  @return The delay of the direct connection's switch, or a negative
+     *          value if no direct connection can implement the arc.
+     */
+    float get_direct_delay_(APPinId sink_pin_id,
+                            const t_physical_tile_loc& driver_loc,
+                            const t_physical_tile_loc& sink_loc) const;
+
+    /**
      * @brief Estimate the delay of an arc between the given driver and sink
      *        pins when they are in different clusters.
      *
@@ -191,6 +234,11 @@ class FlatPlacementArcDelayEstimator {
     ///        same cluster. This is negative if there is no intra-cluster path
     ///        between the pins (or if the pin is not a sink pin).
     vtr::vector<APPinId, float> sink_pin_intra_cluster_delay_;
+
+    /// @brief The direct connections between clusters which may implement the
+    ///        timing arc of each sink pin. Only sink pins with at least one
+    ///        such direct connection are stored, since these are rare.
+    std::unordered_map<APPinId, std::vector<t_direct_arc>> sink_pin_direct_arcs_;
 };
 
 /**
