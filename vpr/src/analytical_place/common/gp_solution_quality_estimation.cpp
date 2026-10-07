@@ -9,6 +9,7 @@
 #include "gp_solution_quality_estimation.h"
 #include <algorithm>
 #include <cstddef>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -28,6 +29,7 @@
 #include "timing_util.h"
 #include "vtr_assert.h"
 #include "vtr_geometry.h"
+#include "vtr_log.h"
 
 /**
  * @brief Check if the given net is fully absorbed in a single tile in the device grid.
@@ -107,6 +109,208 @@ static size_t get_num_distinct_tiles_in_net(APNetId net_id,
     return net_tile_locs.size();
 }
 
+namespace {
+
+/**
+ * @brief The reason a net does or does not contribute to the wire usage estimate.
+ */
+enum class e_net_wire_usage_status {
+    GLOBAL,   ///< The net is global and assumed to not be routed.
+    CONSTANT, ///< The net is a constant net which will not be routed.
+    ABSORBED, ///< The net is expected to be fully absorbed into a single tile.
+    ESTIMATED ///< The net is expected to be routed and its wire usage was estimated.
+};
+
+/**
+ * @brief The estimated post-routing wire usage of a single net, along with the
+ *        intermediate values used to compute it.
+ *
+ * The bounding box and crossing fields are only valid when the status is
+ * ESTIMATED.
+ */
+struct t_net_wire_usage_estimate {
+    e_net_wire_usage_status status = e_net_wire_usage_status::ESTIMATED; ///< Why the net does or does not contribute.
+    size_t num_distinct_tiles = 0;                                       ///< The number of distinct tiles the net connects.
+    int tile_bb_dx = 0;                                                  ///< The x span of the tile bounding box (including the adjacent channel).
+    int tile_bb_dy = 0;                                                  ///< The y span of the tile bounding box (including the adjacent channel).
+    int tile_bb_dz = 0;                                                  ///< The number of layers crossed by the tile bounding box.
+    double crossing = 0.0;                                               ///< The crossing count used to weight the tile HPWL.
+    double wire_usage = 0.0;                                             ///< The estimated wire usage of the net.
+};
+
+} // namespace
+
+/**
+ * @brief Get the name of the given net wire usage status, as written to the
+ *        wire usage estimate echo file.
+ */
+static const char* net_wire_usage_status_name(e_net_wire_usage_status status) {
+    switch (status) {
+        case e_net_wire_usage_status::GLOBAL:
+            return "global";
+        case e_net_wire_usage_status::CONSTANT:
+            return "constant";
+        case e_net_wire_usage_status::ABSORBED:
+            return "absorbed";
+        case e_net_wire_usage_status::ESTIMATED:
+            return "estimated";
+        default:
+            VTR_ASSERT_MSG(false, "Unknown net wire usage status");
+            return "";
+    }
+}
+
+/**
+ * @brief Estimate the post-routing wire usage of a single net in the given
+ *        flat placement.
+ *
+ * See estimate_post_routing_wire_usage for a description of the estimate.
+ */
+static t_net_wire_usage_estimate estimate_net_wire_usage(APNetId net_id,
+                                                         const PartialPlacement& p_placement,
+                                                         const APNetlist& netlist,
+                                                         const DeviceGrid& device_grid) {
+    t_net_wire_usage_estimate net_estimate;
+
+    // Skip nets which are marked as global. These nets are assumed to not be
+    // routed, which is only true for ideal clock modeling. With other clock
+    // modeling options (e.g. route or dedicated_network) these nets are
+    // routed, so their wire usage will not be included in this estimate.
+    // NOTE: The AP netlist speculatively marks any net connected to a clock
+    //       port or a non-clock global port as global.
+    if (netlist.net_is_global(net_id)) {
+        net_estimate.status = e_net_wire_usage_status::GLOBAL;
+        return net_estimate;
+    }
+
+    // Skip constant nets (e.g. gnd / vcc) which will not be routed. The AP netlist
+    // marks these nets as ignored when they will not be routed (see
+    // --constant_net_method).
+    // NOTE: Constant nets may also be ignored for other reasons (e.g. high fanout).
+    //       If constant nets are routed, these nets will be skipped even though
+    //       they are routed.
+    if (netlist.net_is_constant(net_id) && netlist.net_is_ignored(net_id)) {
+        net_estimate.status = e_net_wire_usage_status::CONSTANT;
+        return net_estimate;
+    }
+
+    // If the net is fully absorbed into the tile, it does not contribute to the wire
+    // usage since only the inter-tile wire usage is counted. Since this is operating
+    // on a flat placement, this accounts for nets which will be absorbed by clustering.
+    // NOTE: Absorbed nets due to molecules are already handled by the construction of the
+    //       AP Netlist. These nets trivially do not contribute to the wire usage.
+    if (net_is_fully_absorbed_in_tile(net_id, p_placement, netlist, device_grid)) {
+        net_estimate.status = e_net_wire_usage_status::ABSORBED;
+        net_estimate.num_distinct_tiles = 1;
+        return net_estimate;
+    }
+
+    // Compute the tile bounding box of the net. This is the bounding box over the tiles
+    // that contain each pin in the flat net. For example, if pins are located at
+    // x = {0.1, 0.5, 1.7}, they are contained within the tiles at x = {0, 0, 1}, so the
+    // tile bounding box in the x-dimension would be [0, 1].
+    // TODO: For tiles larger than 1x1, this uses the location within the tile that each
+    //       block is placed at. The placer instead uses the tile root plus a per-pin offset
+    //       (the averaged physical pin locations in the architecture). Since the pin is not
+    //       known here, investigate using the mean pin offset of the tile type instead.
+    int min_x = std::numeric_limits<int>::max();
+    int max_x = std::numeric_limits<int>::lowest();
+    int min_y = std::numeric_limits<int>::max();
+    int max_y = std::numeric_limits<int>::lowest();
+    int min_z = std::numeric_limits<int>::max();
+    int max_z = std::numeric_limits<int>::lowest();
+    for (APPinId pin_id : netlist.net_pins(net_id)) {
+        APBlockId blk_id = netlist.pin_block(pin_id);
+        t_physical_tile_loc tile_loc = p_placement.get_containing_tile_loc(blk_id);
+        min_x = std::min(min_x, tile_loc.x);
+        max_x = std::max(max_x, tile_loc.x);
+        min_y = std::min(min_y, tile_loc.y);
+        max_y = std::max(max_y, tile_loc.y);
+        min_z = std::min(min_z, tile_loc.layer_num);
+        max_z = std::max(max_z, tile_loc.layer_num);
+    }
+    VTR_ASSERT_SAFE(max_x >= min_x && max_y >= min_y && max_z >= min_z);
+
+    // Similar to the placer, the x and y spans include the channel adjacent to the
+    // tile bounding box (hence the +1). The z span only counts actual layer crossings.
+    // TODO: Do we just add dz here? Should a wire in the third dimension
+    //       be worth more?
+    net_estimate.tile_bb_dx = max_x - min_x + 1;
+    net_estimate.tile_bb_dy = max_y - min_y + 1;
+    net_estimate.tile_bb_dz = max_z - min_z;
+    int tile_hpwl = net_estimate.tile_bb_dx + net_estimate.tile_bb_dy + net_estimate.tile_bb_dz;
+
+    // Similar to the placer, weight the wirelength of this net as a function
+    // of its fanout.
+    // We reuse the wirelength crossing count from the placer. Since the placer
+    // operates on the clustered netlist, we estimate the number of pins this net
+    // will have after clustering as the number of distinct tiles it connects.
+    // TODO: AP should have its own crossing count function. This will just make changing
+    //       this in the future easier.
+    net_estimate.num_distinct_tiles = get_num_distinct_tiles_in_net(net_id,
+                                                                    p_placement,
+                                                                    netlist,
+                                                                    device_grid);
+    // Since the net is not absorbed into a single tile, it must connect at least two tiles.
+    VTR_ASSERT_SAFE(net_estimate.num_distinct_tiles >= 2);
+    net_estimate.crossing = wirelength_crossing_count(net_estimate.num_distinct_tiles);
+
+    // Estimate the wire usage based on the tile-HPWL and the crossing factor.
+    net_estimate.status = e_net_wire_usage_status::ESTIMATED;
+    net_estimate.wire_usage = static_cast<double>(tile_hpwl) * net_estimate.crossing;
+
+    return net_estimate;
+}
+
+/**
+ * @brief Write the per-net wire usage estimates of the given flat placement to
+ *        the given file.
+ *
+ * Every net in the AP netlist is written, including nets which do not
+ * contribute to the estimate (with the reason in the status column). The net
+ * name is the last column since it is the only column which may contain
+ * unusual characters.
+ *
+ * NOTE: The per-net estimates are re-computed here, rather than stored while
+ *       computing the total, to avoid storing them when the echo file is not
+ *       enabled.
+ */
+static void write_wire_usage_estimate_echo(const std::string& filename,
+                                           const PartialPlacement& p_placement,
+                                           const APNetlist& netlist,
+                                           const DeviceGrid& device_grid) {
+    std::ofstream os(filename);
+    if (!os) {
+        VTR_LOG_WARN("Unable to open wire usage estimate echo file '%s' for writing.\n", filename.c_str());
+        return;
+    }
+
+    os << "# Estimated post-routing wire usage of each net in the AP netlist.\n";
+    os << "#   num_pins:  Number of pins on the net (atom-level).\n";
+    os << "#   status:    global | constant | absorbed (do not contribute) or estimated.\n";
+    os << "#   num_tiles: Number of distinct tiles connected by the net.\n";
+    os << "#   bb_dx/dy:  Tile bounding box span, including the adjacent channel (+1).\n";
+    os << "#   bb_dz:     Number of layers crossed by the tile bounding box.\n";
+    os << "#   crossing:  Crossing count used to weight the tile HPWL.\n";
+    os << "#   estimate:  (bb_dx + bb_dy + bb_dz) * crossing.\n";
+    os << "num_pins status num_tiles bb_dx bb_dy bb_dz crossing estimate net_name\n";
+    for (APNetId net_id : netlist.nets()) {
+        t_net_wire_usage_estimate net_estimate = estimate_net_wire_usage(net_id,
+                                                                         p_placement,
+                                                                         netlist,
+                                                                         device_grid);
+        os << netlist.net_pins(net_id).size() << " "
+           << net_wire_usage_status_name(net_estimate.status) << " "
+           << net_estimate.num_distinct_tiles << " "
+           << net_estimate.tile_bb_dx << " "
+           << net_estimate.tile_bb_dy << " "
+           << net_estimate.tile_bb_dz << " "
+           << net_estimate.crossing << " "
+           << net_estimate.wire_usage << " "
+           << netlist.net_name(net_id) << "\n";
+    }
+}
+
 double estimate_post_routing_wire_usage(const PartialPlacement& p_placement,
                                         const APNetlist& netlist,
                                         const DeviceGrid& device_grid) {
@@ -114,85 +318,16 @@ double estimate_post_routing_wire_usage(const PartialPlacement& p_placement,
     // wire usage each net will contribute.
     double wire_usage = 0.0;
     for (APNetId net_id : netlist.nets()) {
-        // Skip nets which are marked as global. These nets are assumed to not be
-        // routed, which is only true for ideal clock modeling. With other clock
-        // modeling options (e.g. route or dedicated_network) these nets are
-        // routed, so their wire usage will not be included in this estimate.
-        // NOTE: The AP netlist speculatively marks any net connected to a clock
-        //       port or a non-clock global port as global.
-        if (netlist.net_is_global(net_id))
-            continue;
-
-        // Skip constant nets (e.g. gnd / vcc) which will not be routed. The AP netlist
-        // marks these nets as ignored when they will not be routed (see
-        // --constant_net_method).
-        // NOTE: Constant nets may also be ignored for other reasons (e.g. high fanout).
-        //       If constant nets are routed, these nets will be skipped even though
-        //       they are routed.
-        if (netlist.net_is_constant(net_id) && netlist.net_is_ignored(net_id))
-            continue;
-
-        // If the net is fully absorbed into the tile, it does not contribute to the wire
-        // usage since only the inter-tile wire usage is counted. Since this is operating
-        // on a flat placement, this accounts for nets which will be absorbed by clustering.
-        // NOTE: Absorbed nets due to molecules are already handled by the construction of the
-        //       AP Netlist. These nets trivially do not contribute to the wire usage.
-        if (net_is_fully_absorbed_in_tile(net_id, p_placement, netlist, device_grid))
-            continue;
-
-        // Compute the tile bounding box of the net. This is the bounding box over the tiles
-        // that contain each pin in the flat net. For example, if pins are located at
-        // x = {0.1, 0.5, 1.7}, they are contained within the tiles at x = {0, 0, 1}, so the
-        // tile bounding box in the x-dimension would be [0, 1].
-        // TODO: For tiles larger than 1x1, this uses the location within the tile that each
-        //       block is placed at. The placer instead uses the tile root plus a per-pin offset
-        //       (the averaged physical pin locations in the architecture). Since the pin is not
-        //       known here, investigate using the mean pin offset of the tile type instead.
-        int min_x = std::numeric_limits<int>::max();
-        int max_x = std::numeric_limits<int>::lowest();
-        int min_y = std::numeric_limits<int>::max();
-        int max_y = std::numeric_limits<int>::lowest();
-        int min_z = std::numeric_limits<int>::max();
-        int max_z = std::numeric_limits<int>::lowest();
-        for (APPinId pin_id : netlist.net_pins(net_id)) {
-            APBlockId blk_id = netlist.pin_block(pin_id);
-            t_physical_tile_loc tile_loc = p_placement.get_containing_tile_loc(blk_id);
-            min_x = std::min(min_x, tile_loc.x);
-            max_x = std::max(max_x, tile_loc.x);
-            min_y = std::min(min_y, tile_loc.y);
-            max_y = std::max(max_y, tile_loc.y);
-            min_z = std::min(min_z, tile_loc.layer_num);
-            max_z = std::max(max_z, tile_loc.layer_num);
-        }
-        VTR_ASSERT_SAFE(max_x >= min_x && max_y >= min_y && max_z >= min_z);
-
-        // Similar to the placer, the x and y spans include the channel adjacent to the
-        // tile bounding box (hence the +1). The z span only counts actual layer crossings.
-        // TODO: Do we just add dz here? Should a wire in the third dimension
-        //       be worth more?
-        int tile_bb_dx = max_x - min_x + 1;
-        int tile_bb_dy = max_y - min_y + 1;
-        int tile_bb_dz = max_z - min_z;
-        int tile_hpwl = tile_bb_dx + tile_bb_dy + tile_bb_dz;
-
-        // Similar to the placer, weight the wirelength of this net as a function
-        // of its fanout.
-        // We reuse the wirelength crossing count from the placer. Since the placer
-        // operates on the clustered netlist, we estimate the number of pins this net
-        // will have after clustering as the number of distinct tiles it connects.
-        // TODO: AP should have its own crossing count function. This will just make changing
-        //       this in the future easier.
-        size_t num_distinct_tiles = get_num_distinct_tiles_in_net(net_id,
-                                                                  p_placement,
-                                                                  netlist,
-                                                                  device_grid);
-        // Since the net is not absorbed into a single tile, it must connect at least two tiles.
-        VTR_ASSERT_SAFE(num_distinct_tiles >= 2);
-        double crossing = wirelength_crossing_count(num_distinct_tiles);
-
-        // Estimate the wire usage based on the tile-HPWL and the crossing factor.
-        wire_usage += static_cast<double>(tile_hpwl) * crossing;
+        wire_usage += estimate_net_wire_usage(net_id, p_placement, netlist, device_grid).wire_usage;
     }
+
+    // Write the per-net estimates to an echo file if requested, so they can be
+    // compared net-by-net against the routed wire usage of each net.
+    if (isEchoFileEnabled(E_ECHO_AP_POST_ROUTING_WIRE_USAGE_ESTIMATE))
+        write_wire_usage_estimate_echo(getEchoFileName(E_ECHO_AP_POST_ROUTING_WIRE_USAGE_ESTIMATE),
+                                       p_placement,
+                                       netlist,
+                                       device_grid);
 
     return wire_usage;
 }

@@ -36,6 +36,11 @@ struct t_ap_timing_estimate {
  * half-perimeter, weighted by the placer's crossing count for the estimated
  * number of tiles that the net connects.
  *
+ * If the wire usage estimate echo file is enabled, the estimate of every net
+ * (and the intermediate values used to compute it) is written to it. This can
+ * be compared net-by-net against the routed net wire usage echo file, joined
+ * on the net name.
+ *
  *  @param p_placement  The flat placement to estimate the wire usage of.
  *  @param netlist      The AP netlist that the placement is over.
  *  @param device_grid  The device grid that the placement is over.
